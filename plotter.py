@@ -10,25 +10,23 @@ class TrajectoryPlotter:
         self.fig, self.ax = plt.subplots(figsize=(5, 5))
 
     def plot_trajectory(self, obs_length, predicted_trajectories):
-        # 清除旧图
         self.ax.clear()
 
-        # 重新设置标签和标题
         self.ax.set_xlabel('X')
         self.ax.set_ylabel('Y')
         self.ax.set_title('Trajectory Prediction')
         self.ax.set_aspect('equal', adjustable='box')
-        self.ax.set_xlim(-10, 10)  # 设置x轴范围
-        self.ax.set_ylim(-10, 10)  # 设置y轴范围
+        self.ax.set_xlim(-10, 10)
+        self.ax.set_ylim(-10, 10)
 
-        # Plot observed points
+        """Plot observed points"""
         for i in range(predicted_trajectories.shape[1]):
             self.ax.plot(predicted_trajectories[:obs_length, i, 0].cpu().numpy() * X_SCALE,
                          predicted_trajectories[:obs_length, i, 1].cpu().numpy() * Y_SCALE,
                          'bo-', label='Observed' if i == 0 else "",
                          markersize=3, linewidth=1)
 
-        # Plot predicted points
+        """Plot predicted points"""
         for i in range(predicted_trajectories.shape[1]):
             observed_last = predicted_trajectories[obs_length - 1, i, :].cpu().numpy()
             predicted_first = predicted_trajectories[obs_length, i, :].cpu().numpy()
@@ -41,4 +39,4 @@ class TrajectoryPlotter:
 
         self.ax.legend()
         plt.draw()
-        plt.pause(0.001)  # 暂停以更新图形
+        plt.pause(0.001)

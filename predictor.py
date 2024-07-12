@@ -66,21 +66,21 @@ class Predictor:
         return net, saved_args
 
     def predict_trajectory(self, x_seq, obs_length, pred_length, dimensions):
-        # Get the grid masks for the sequence
+        """Get the grid masks for the sequence"""
         grid_seq = getSequenceGridMask(x_seq, dimensions, self.saved_args.neighborhood_size, self.saved_args.grid_size)
 
-        # Construct ST graph
+        """Construct ST graph"""
         stgraph = STGraph(obs_length)
         stgraph.construct_graph(x_seq)
 
-        # Get nodes and nodesPresent
+        """Get nodes and nodesPresent"""
         nodes, _, nodesPresent, _ = stgraph.get_sequence(0)
         nodes = Variable(torch.from_numpy(nodes).float(), requires_grad=False).to(torch.device("cpu"))
 
-        # Extract the observed part of the trajectories
+        """Extract the observed part of the trajectories"""
         obs_nodes, obs_nodesPresent, obs_grid = nodes[:obs_length], nodesPresent[:obs_length], grid_seq[:obs_length]
 
-        # Perform trajectory prediction
+        """Perform trajectory prediction"""
         predicted_trajectories = self.sample(obs_nodes, obs_nodesPresent, obs_grid, obs_length, pred_length, dimensions)
 
         return predicted_trajectories

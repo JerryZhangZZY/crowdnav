@@ -21,8 +21,8 @@ EPOCH = 139
 X_SCALE = 10
 Y_SCALE = -10
 
-TIMESTEP = 0.1
 HORIZON_LENGTH = PRED_LENGTH
+# HORIZON_LENGTH = 3
 NMPC_TIMESTEP = 0.588
 ROBOT_RADIUS = 0.4
 VMAX = 0.9
@@ -35,19 +35,23 @@ lower_bound = [-(1 / np.sqrt(2)) * VMAX] * HORIZON_LENGTH * 2
 
 
 class PedestrianPool:
+    """
+    Dynamic management of pedestrians
+    """
+
     def __init__(self):
         self.active_pedestrians = {}
         self.inactive_pedestrians = []
 
-        # 提前创建12个行人并放置到远处
-        for _ in range(12):
+        """Create 15 pedestrians in advance and place them in the distance"""
+        for _ in range(15):
             pedestrian_visual = p.createVisualShape(p.GEOM_SPHERE, radius=0.3, rgbaColor=[1, 0, 0, 1])
             pedestrian_collision = p.createCollisionShape(p.GEOM_SPHERE, radius=0.3)
             pedestrian_id = p.createMultiBody(baseMass=1,
                                               baseInertialFramePosition=[0, 0, 0],
                                               baseCollisionShapeIndex=pedestrian_collision,
                                               baseVisualShapeIndex=pedestrian_visual,
-                                              basePosition=[50, 50, 50])  # 放置到远处
+                                              basePosition=[50, 50, 50])
             self.inactive_pedestrians.append(pedestrian_id)
 
     def get_pedestrian(self, pid, position):
@@ -68,16 +72,23 @@ class PedestrianPool:
     def release_pedestrian(self, pid):
         pedestrian_id = self.active_pedestrians.pop(pid, None)
         if pedestrian_id:
-            p.resetBasePositionAndOrientation(pedestrian_id, [50, 50, 50], [0, 0, 0, 1])  # 放置到远处
+            p.resetBasePositionAndOrientation(pedestrian_id, [50, 50, 50], [0, 0, 0, 1])
             self.inactive_pedestrians.append(pedestrian_id)
 
 
 def interpolate_positions(start_pos, end_pos, num_steps):
-    # 线性插值计算中间位置
+    """
+    Linear interpolation
+    """
     return [start_pos + (end_pos - start_pos) * t / num_steps for t in range(1, num_steps + 1)]
 
 
 def compute_velocity(robot_state, obstacle_predictions, xref):
+    """
+    Calculation of control speed in x, y direction
+
+    Final output of NMPC
+    """
     u0 = np.random.rand(2 * HORIZON_LENGTH)
 
     def cost_fn(u):
@@ -90,6 +101,9 @@ def compute_velocity(robot_state, obstacle_predictions, xref):
 
 
 def compute_xref(start, goal, number_of_steps, timestep):
+    """
+    Calculate reference points
+    """
     dir_vec = goal - start
     norm = np.linalg.norm(dir_vec)
     if norm < 0.1:
@@ -101,6 +115,9 @@ def compute_xref(start, goal, number_of_steps, timestep):
 
 
 def total_cost(u, robot_state, obstacle_predictions, xref):
+    """
+    Calculate total cost
+    """
     x_robot = update_state(robot_state, u, NMPC_TIMESTEP)
     c1 = tracking_cost(x_robot, xref)
     c2 = total_collision_cost(x_robot, obstacle_predictions)
@@ -108,10 +125,16 @@ def total_cost(u, robot_state, obstacle_predictions, xref):
 
 
 def tracking_cost(x, xref):
+    """
+    Calculate tracking cost
+    """
     return np.linalg.norm(x - xref)
 
 
 def total_collision_cost(robot, obstacles):
+    """
+    Calculate total collision cost
+    """
     total_cost = 0
     for i in range(HORIZON_LENGTH):
         for j in range(len(obstacles)):
@@ -123,39 +146,33 @@ def total_collision_cost(robot, obstacles):
 
 
 def collision_cost(x0, x1):
+    """
+    Calculate collision cost
+    """
     d = np.linalg.norm(x0 - x1)
     return Qc / (1 + np.exp(kappa * (d - 2 * ROBOT_RADIUS)))
 
 
 def get_prediction_array(tensor):
-    # 提取后 8 个矩阵
+    """
+    Extract the predicted trajectories from the Social-LSTM output and convert the format
+    """
     last_8_matrices = tensor[-8:]
-
-    # 获取矩阵的行数
     num_rows = last_8_matrices.shape[1]
-
-    # 初始化一个空的列表来存储最终的 arrays
     prediction_array = []
-
-    # 遍历每行
     for row in range(num_rows):
-        # 初始化一个空列表来存储拼接后的行
         concatenated_row = []
-
-        # 遍历每个矩阵
         for matrix in last_8_matrices:
-            # 对矩阵的第一列应用 x_scale，第二列应用 y_scale
             scaled_row = [matrix[row][0] * X_SCALE, matrix[row][1] * Y_SCALE]
-            # 将当前行的缩放后的元素添加到列表中
             concatenated_row.extend(scaled_row)
-
-        # 将拼接后的行转换为 numpy array 并添加到最终的列表中
         prediction_array.append(np.array(concatenated_row))
-
     return prediction_array
 
 
 def update_state(x0, u, timestep):
+    """
+    Update the state of the robot
+    """
     N = int(len(u) / 2)
     lower_triangular_ones_matrix = np.tril(np.ones((N, N)))
     kron = np.kron(lower_triangular_ones_matrix, np.eye(2))
@@ -163,6 +180,9 @@ def update_state(x0, u, timestep):
 
 
 def goto(agent, goal_x, goal_y):
+    """
+    Motion control of the robot
+    """
     base_pos = p.getBasePositionAndOrientation(agent)
     current_x = base_pos[0][0]
     current_y = base_pos[0][1]
@@ -191,7 +211,7 @@ def goto(agent, goal_x, goal_y):
     p.setJointMotorControl2(agent, 1, p.VELOCITY_CONTROL, targetVelocity=rightWheelVelocity, force=10)
 
 
-# 设置 PyBullet
+"""Pybullet setup"""
 p.connect(p.GUI, options="--width=768 --height=768")
 p.configureDebugVisualizer(p.COV_ENABLE_GUI, 0)
 p.setAdditionalSearchPath(pybullet_data.getDataPath())
@@ -200,17 +220,20 @@ p.loadURDF("plane.urdf")
 p.resetDebugVisualizerCamera(cameraDistance=15, cameraYaw=0, cameraPitch=-89.999, cameraTargetPosition=[0, 0, 0])
 p.setRealTimeSimulation(1)
 
+"""Load robot model"""
 robotId = p.loadURDF("data/turtlebot.urdf", START_POS, [0, 0, 0, 1], globalScaling=2)
 
-# 加载模型
+"""Load Social-LSTM model"""
 predictor = Predictor(MODEL_NUM, EPOCH)
 
+"""Prepare trajectory plotter"""
 plotter = TrajectoryPlotter()
 
 pedestrian_pool = PedestrianPool()
 clean_data = []
 interpolated_steps = {}
 
+"""Read dataset"""
 with open(TRAJ_DATA_PATH, 'r') as file:
     reader = csv.reader(file)
     data = list(reader)
@@ -230,18 +253,17 @@ time_steps = np.unique(clean_data[:, 0])
 prev_positions = {}
 history_positions = {pid: [] for pid in np.unique(pids)}
 
-
+"""Start simulation"""
 for time_step in time_steps:
     current_data = clean_data[clean_data[:, 0] == time_step]
     current_ids = set()
 
-    # 计算当前时间步的插值位置
     for record in current_data:
         frame, pid, x, y = int(record[0]), int(record[1]), record[2], record[3]
         current_ids.add(pid)
         new_position = np.array([x, y, 0.3])
 
-        if pid not in pedestrian_pool.active_pedestrians:  # 创建新行人
+        if pid not in pedestrian_pool.active_pedestrians:
             pedestrian_id = pedestrian_pool.get_pedestrian(pid, new_position)
             prev_positions[pid] = new_position
             interpolated_steps[pid] = [new_position] * INTERPOLATION_NUM
@@ -251,7 +273,7 @@ for time_step in time_steps:
             interpolated_steps[pid] = interpolated_positions
             prev_positions[pid] = new_position
 
-    # 更新所有行人的位置
+    """Update pedestrian positions"""
     for i in range(INTERPOLATION_NUM):
         for pid in current_ids:
             p.resetBasePositionAndOrientation(pedestrian_pool.active_pedestrians[pid], interpolated_steps[pid][i],
@@ -259,7 +281,7 @@ for time_step in time_steps:
         # p.stepSimulation()
         time.sleep(0.05)
 
-    # 释放不再出现的行人
+    """Recycle pedestrian objects that have left"""
     for pid in list(pedestrian_pool.active_pedestrians.keys()):
         if pid not in current_ids:
             pedestrian_pool.release_pedestrian(pid)
@@ -267,24 +289,24 @@ for time_step in time_steps:
             del interpolated_steps[pid]
             del history_positions[pid]
 
-    # 打印当前时刻所有active的行人的id和对应的x, y坐标
+    """The ids and corresponding x, y coordinates of all active pedestrians at the current moment"""
     active_pedestrians_info = {pid: p.getBasePositionAndOrientation(pedestrian_pool.active_pedestrians[pid])[0][:2] for
                                pid in current_ids}
 
-    # 更新每个行人的历史位置
+    """Update the historical location of each pedestrian"""
     for pid in current_ids:
         history_positions[pid].append(np.array([pid] + list(active_pedestrians_info[pid])))
         if len(history_positions[pid]) > OBS_LENGTH:
             history_positions[pid].pop(0)
 
-    # 检查是否有行人的历史位置达到OBS_LENGTH
+    """Check if any pedestrian's historical position length satisfies OBS_LENGTH"""
     x_seq = []
     for t in range(OBS_LENGTH):
         frame_data = []
         for pid, positions in history_positions.items():
             if len(positions) == OBS_LENGTH:
                 position = positions[t]
-                # 对坐标进行转换
+                """Zoom coordinates"""
                 new_position = np.array([position[0], position[1] / X_SCALE, position[2] / Y_SCALE])
                 frame_data.append(new_position)
         if frame_data:
@@ -292,28 +314,30 @@ for time_step in time_steps:
 
     obstacle_predictions = []
     if x_seq:
-        # print(x_seq)
         predicted_trajectories = predictor.predict_trajectory(x_seq, OBS_LENGTH, PRED_LENGTH, [640, 480])
-        # print(predicted_trajectories)
 
-        # 画图
+        """Drawing real-time predictive trajectories"""
         plotter.plot_trajectory(OBS_LENGTH, predicted_trajectories)
 
         obstacle_predictions = get_prediction_array(predicted_trajectories)
-        # print(obstacle_predictions)
 
     robot_pos, robot_orientation = p.getBasePositionAndOrientation(robotId)
     # print(time.time())
     xref = compute_xref(np.array(robot_pos[:2]), TARGET_POS, HORIZON_LENGTH, NMPC_TIMESTEP)
     # vel, _ = compute_velocity(np.array(robot_pos[:2]), [], xref)
     vel, _ = compute_velocity(np.array(robot_pos[:2]), obstacle_predictions, xref)
-    # print(vel)
-    if abs(vel[0]) < 0.2 and abs(vel[1]) < 0.2:
-        p.setJointMotorControl2(robotId, 0, p.VELOCITY_CONTROL, targetVelocity=0, force=10)
-        p.setJointMotorControl2(robotId, 1, p.VELOCITY_CONTROL, targetVelocity=0, force=10)
-    else:
-        goto(robotId, vel[0] * 5 + robot_pos[0], vel[1] * 5 + robot_pos[1])
-    # p.resetBasePositionAndOrientation(robotId, [vel[0] * NMPC_TIMESTEP + robot_pos[0], vel[1] * NMPC_TIMESTEP + robot_pos[1], 0], [0, 0, 0, 1])
 
-# 结束模拟
+    """Robot Motion Simulation"""
+    # if abs(vel[0]) < 0.2 and abs(vel[1]) < 0.2:
+    #     p.setJointMotorControl2(robotId, 0, p.VELOCITY_CONTROL, targetVelocity=0, force=10)
+    #     p.setJointMotorControl2(robotId, 1, p.VELOCITY_CONTROL, targetVelocity=0, force=10)
+    # else:
+    #     goto(robotId, vel[0] * 5 + robot_pos[0], vel[1] * 5 + robot_pos[1])
+
+    """Robot Simple Transient"""
+    p.resetBasePositionAndOrientation(robotId,
+                                      [vel[0] * NMPC_TIMESTEP + robot_pos[0], vel[1] * NMPC_TIMESTEP + robot_pos[1], 0],
+                                      [0, 0, 0, 1])
+
+"""End simulation"""
 p.disconnect()
