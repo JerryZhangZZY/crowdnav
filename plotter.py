@@ -16,7 +16,7 @@ class TrajectoryPlotter:
         self.ax.set_ylabel('Y')
         self.ax.set_title('Trajectory Prediction')
         self.ax.set_aspect('equal', adjustable='box')
-        self.ax.set_xlim(-10, 10)
+        self.ax.set_xlim(-20, 20)
         self.ax.set_ylim(-10, 10)
 
         """Plot observed points"""
