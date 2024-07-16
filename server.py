@@ -1,7 +1,3 @@
-"""
-Run this on MyAGV
-"""
-
 import socket
 from pymycobot.myagv import MyAgv
 
@@ -25,13 +21,17 @@ def start_server(host='0.0.0.0', port=12345):
                     data = conn.recv(1024)
                     if not data:
                         break
-                    numbers = data.decode('utf-8').split(',')
-                    num1, num2, num3 = int(numbers[0]), int(numbers[1]), int(numbers[2])
-                    print({num1}, {num2}, {num3})
                     try:
-                        MA._mesg(128 + num1, 128 + num2, 128 + num3)
-                    except Exception as e:
-                        print(e)
+                        numbers = data.decode('utf-8').split(',')
+                        num1, num2, num3 = int(numbers[0]), int(numbers[1]), int(numbers[2])
+                        print({num1}, {num2}, {num3})
+                        try:
+                            MA._mesg(128 + num1, 128 + num2, 128 + num3)
+                        except Exception as e:
+                            print(e)
+                    except (ValueError, IndexError) as e:
+                        print(f"Data conversion error: {e}")
+                        continue  # Ignore this error and continue to the next data
                 except socket.timeout:
                     print("No data received for TIME_OUT seconds, stopping AGV.")
                     MA.stop()

@@ -1,13 +1,15 @@
 import matplotlib.pyplot as plt
 import matplotlib as mpl
+
 mpl.use('macosx')
 
 X_SCALE = 25
 Y_SCALE = 25
 
+
 class TrajectoryPlotter:
     def __init__(self):
-        self.fig, self.ax = plt.subplots(figsize=(5, 5))
+        self.fig, self.ax = plt.subplots(figsize=(7, 4.5))
 
     def plot_trajectory(self, obs_length, predicted_trajectories):
         self.ax.clear()
@@ -41,39 +43,49 @@ class TrajectoryPlotter:
         plt.draw()
         plt.pause(0.001)
 
-    def plot_trajectory_and_robot(self, obs_length, predicted_trajectories, point1, point2):
+    def plot_trajectory_and_robot(self, obs_length, predicted_trajectories, current, target):
         self.ax.clear()
 
         self.ax.set_xlabel('X')
         self.ax.set_ylabel('Y')
-        self.ax.set_title('Trajectory Prediction')
+        self.ax.set_title('Observer')
         self.ax.set_aspect('equal', adjustable='box')
-        self.ax.set_xlim(-20, 20)
-        self.ax.set_ylim(-10, 10)
+        self.ax.set_xlim(-18, 18)
+        self.ax.set_ylim(-11, 11)
 
         """Plot observed points"""
-        for i in range(predicted_trajectories.shape[1]):
-            self.ax.plot(predicted_trajectories[:obs_length, i, 0].cpu().numpy() * X_SCALE,
-                         predicted_trajectories[:obs_length, i, 1].cpu().numpy() * Y_SCALE,
-                         'bo-', label='Observed' if i == 0 else "",
-                         markersize=3, linewidth=1)
+        if predicted_trajectories is not None and predicted_trajectories is not None:
+            for i in range(predicted_trajectories.shape[1]):
+                self.ax.plot(predicted_trajectories[:obs_length, i, 0].cpu().numpy() * X_SCALE,
+                             predicted_trajectories[:obs_length, i, 1].cpu().numpy() * Y_SCALE,
+                             'bo-', label='Observed' if i == 0 else "",
+                             markersize=3, linewidth=1)
 
-        """Plot predicted points"""
-        for i in range(predicted_trajectories.shape[1]):
-            observed_last = predicted_trajectories[obs_length - 1, i, :].cpu().numpy()
-            predicted_first = predicted_trajectories[obs_length, i, :].cpu().numpy()
-            self.ax.plot([observed_last[0] * X_SCALE, predicted_first[0] * X_SCALE],
-                         [observed_last[1] * Y_SCALE, predicted_first[1] * Y_SCALE], 'bo-', markersize=3, linewidth=1)
-            self.ax.plot(predicted_trajectories[obs_length:, i, 0].cpu().numpy() * X_SCALE,
-                         predicted_trajectories[obs_length:, i, 1].cpu().numpy() * Y_SCALE,
-                         'ro-', label='Predicted' if i == 0 else "",
-                         markersize=3, linewidth=1)
+            """Plot predicted points"""
+            for i in range(predicted_trajectories.shape[1]):
+                observed_last = predicted_trajectories[obs_length - 1, i, :].cpu().numpy()
+                predicted_first = predicted_trajectories[obs_length, i, :].cpu().numpy()
+                self.ax.plot([observed_last[0] * X_SCALE, predicted_first[0] * X_SCALE],
+                             [observed_last[1] * Y_SCALE, predicted_first[1] * Y_SCALE], 'bo-', markersize=3,
+                             linewidth=1)
+                self.ax.plot(predicted_trajectories[obs_length:, i, 0].cpu().numpy() * X_SCALE,
+                             predicted_trajectories[obs_length:, i, 1].cpu().numpy() * Y_SCALE,
+                             'ro-', label='Predicted' if i == 0 else "",
+                             markersize=3, linewidth=1)
 
         """Plot additional points"""
-        self.ax.plot(point1[0] * X_SCALE, point1[1] * Y_SCALE, 'gx', label='Point 1', markersize=10)
-        self.ax.plot(point2[0] * X_SCALE, point2[1] * Y_SCALE, 'yx', label='Point 2', markersize=10)
+        if current is not None:
+            self.ax.plot(current[0] * X_SCALE, current[1] * Y_SCALE, 'mo', label='Current', markersize=10)
+
+        if target is not None:
+            self.ax.plot(target[0] * X_SCALE, target[1] * Y_SCALE, 'g*', label='Target', markersize=10)
+
+        """Plot arrow from current to target"""
+        if current is not None and target is not None:
+            self.ax.annotate('', xy=(target[0] * X_SCALE, target[1] * Y_SCALE),
+                             xytext=(current[0] * X_SCALE, current[1] * Y_SCALE),
+                             arrowprops=dict(arrowstyle="-", color='grey', linestyle='dashed', lw=1.5))
 
         self.ax.legend()
         plt.draw()
         plt.pause(0.001)
-

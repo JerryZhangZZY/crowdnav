@@ -3,6 +3,7 @@ import time
 import math
 import socket
 import numpy as np
+import threading
 
 from scipy.optimize import minimize, Bounds
 
@@ -10,7 +11,7 @@ from plotter import TrajectoryPlotter
 from predictor import Predictor
 
 ROBOT_ID = 0
-TARGET_POS = np.array([0, 5])
+TARGET_POS = np.array([0, 0])
 
 ARUCO_TYPE = cv2.aruco.DICT_4X4_100
 CALIBRATION_MAT_PATH = "calibration_matrix.npy"
@@ -26,16 +27,16 @@ Y_SCALE = 25
 HORIZON_LENGTH = PRED_LENGTH
 # HORIZON_LENGTH = 3
 NMPC_TIMESTEP = 0.3
-ROBOT_RADIUS = 3
-VMAX = 10
-VMIN = 0.1
+ROBOT_RADIUS = 2.5
+VMAX = 5
+VMIN = 2
 Qc = 5.0
 kappa = 4.0
 
-FORWARD_P_GAIN = 10
-FORWARD_D_GAIN = 10
-LATERAL_P_GAIN = 10
-LATERAL_D_GAIN = 10
+FORWARD_P_GAIN = 20
+FORWARD_D_GAIN = 15
+LATERAL_P_GAIN = 20
+LATERAL_D_GAIN = 15
 ROTATION_P_GAIN = 2.5
 ROTATION_D_GAIN = 3
 
@@ -51,6 +52,9 @@ previous_rotation_error = 0
 
 
 def get_marker_pos(frame, aruco_dict_type, matrix_coefficients, distortion_coefficients):
+    """
+    Get position of all markers in frame, including pedestrians and robot
+    """
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     aruco_dict = cv2.aruco.Dictionary_get(aruco_dict_type)
     parameters = cv2.aruco.DetectorParameters_create()
@@ -59,7 +63,7 @@ def get_marker_pos(frame, aruco_dict_type, matrix_coefficients, distortion_coeff
                                                                 cameraMatrix=matrix_coefficients,
                                                                 distCoeff=distortion_coefficients)
 
-    pedestrian_pos = {}
+    marker_pos = {}
     if ids is not None:
         for i in range(len(ids)):
             rvec, tvec, markerPoints = cv2.aruco.estimatePoseSingleMarkers(corners[i], 0.02, matrix_coefficients,
@@ -73,8 +77,8 @@ def get_marker_pos(frame, aruco_dict_type, matrix_coefficients, distortion_coeff
 
             x = tvec[0][0][0] * 100
             y = tvec[0][0][1] * -100
-            pedestrian_pos[ids[i][0]] = (x, y)
-    return pedestrian_pos
+            marker_pos[ids[i][0]] = (x, y)
+    return marker_pos
 
 
 def compute_velocity(robot_state, obstacle_predictions, xref):
@@ -194,13 +198,21 @@ def apply_deadzone(value, deadzone):
     return value
 
 
-def goto(x_target, y_target, frame, aruco_dict_type, k, d):
+# def goto(x_target, y_target, frame, aruco_dict_type, k, d):
+def goto(current, target):
     global previous_lateral_error, previous_forward_error, previous_rotation_error
 
-    x_current, y_current, orientation = get_position_and_orientation(frame, aruco_dict_type, k, d)
+    x_current = current[0]
+    y_current = current[1]
+    orientation = current[2]
 
-    if x_current is None:
-        return
+    x_target = target[0]
+    y_target = target[1]
+
+    # x_current, y_current, orientation = get_position_and_orientation(frame, aruco_dict_type, k, d)
+    #
+    # if x_current is None:
+    #     return
 
     # Transform target coordinates to the robot's coordinate system
     target_robot_x, target_robot_y = transform_to_robot_coords(x_target, y_target, x_current, y_current, orientation)
@@ -248,7 +260,7 @@ def send_control(num1, num2, num3):
         print(f"An error occurred: {e}")
 
 
-def get_position_and_orientation(frame, aruco_dict_type, matrix_coefficients, distortion_coefficients):
+def get_robot_pos_and_ori(frame, aruco_dict_type, matrix_coefficients, distortion_coefficients):
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     aruco_dict = cv2.aruco.Dictionary_get(aruco_dict_type)
     parameters = cv2.aruco.DetectorParameters_create()
@@ -321,8 +333,34 @@ video.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
 # video.set(cv2.CAP_PROP_FOCUS, 1)
 time.sleep(0.5)
 
+video_lock = threading.Lock()
+
+target = tuple(TARGET_POS)
+target_lock = threading.Lock()
+
+
+def control_thread():
+    while True:
+        with video_lock:
+            ret, frame = video.read()
+        if not ret:
+            break
+        with target_lock:
+            current_target = target
+        robot_pos_and_ori = get_robot_pos_and_ori(frame, ARUCO_TYPE, k, d)
+        if not any(value is None for value in robot_pos_and_ori):
+            goto(robot_pos_and_ori, current_target)
+        time.sleep(0.05)
+
+
+control_thread = threading.Thread(target=control_thread)
+control_thread.start()
+
 while True:
-    _, frame = video.read()
+    with video_lock:
+        ret, frame = video.read()
+    if not ret:
+        break
     """Get the position of all markers, including pedestrians and the robot"""
     marker_pos = get_marker_pos(frame, ARUCO_TYPE, k, d)
     """Select position of pedestrians"""
@@ -357,6 +395,7 @@ while True:
         if frame_data:
             x_seq.append(np.array(frame_data))
 
+    predicted_trajectories = None
     obstacle_predictions = []
     if x_seq:
         predicted_trajectories = predictor.predict_trajectory(x_seq, OBS_LENGTH, PRED_LENGTH, [640, 480])
@@ -366,6 +405,7 @@ while True:
 
         obstacle_predictions = get_prediction_array(predicted_trajectories)
 
+    robot_pos = None
     """If robot detected"""
     if ROBOT_ID in marker_pos:
         robot_pos = marker_pos[ROBOT_ID]
@@ -376,12 +416,18 @@ while True:
             vel, _ = compute_velocity(robot_pos, obstacle_predictions, xref)
             target_x = robot_pos[0] + vel[0] * NMPC_TIMESTEP * 5
             target_y = robot_pos[1] + vel[1] * NMPC_TIMESTEP * 5
-            plotter.plot_trajectory_and_robot(OBS_LENGTH, predicted_trajectories, (robot_pos[0] / X_SCALE, robot_pos[1] / Y_SCALE), (target_x / X_SCALE, target_y / Y_SCALE))
             print("NMPC")
-            goto(target_x, target_y, frame, ARUCO_TYPE, k, d)
+            with target_lock:
+                target = (target_x, target_y)
         else:
             print("simple go")
-            goto(TARGET_POS[0], TARGET_POS[1], frame, ARUCO_TYPE, k, d)
+            with target_lock:
+                target = tuple(TARGET_POS)
+
+    robot_pos_scaled = (robot_pos[0] / X_SCALE, robot_pos[1] / Y_SCALE) if robot_pos is not None else None
+    plotter.plot_trajectory_and_robot(OBS_LENGTH, predicted_trajectories,
+                                      robot_pos_scaled,
+                                      (target[0] / X_SCALE, target[1] / Y_SCALE))
 
     cv2.imshow('Camera', frame)
     cv2.waitKey(1) & 0xFF
