@@ -11,7 +11,7 @@ from plotter import TrajectoryPlotter
 from predictor import Predictor
 
 ROBOT_ID = 0
-TARGET_POS = np.array([0, 0])
+FINAL_TARGET = (-10, 7)
 
 ARUCO_TYPE = cv2.aruco.DICT_4X4_100
 CALIBRATION_MAT_PATH = "calibration_matrix.npy"
@@ -69,11 +69,11 @@ def get_marker_pos(frame, aruco_dict_type, matrix_coefficients, distortion_coeff
             rvec, tvec, markerPoints = cv2.aruco.estimatePoseSingleMarkers(corners[i], 0.02, matrix_coefficients,
 
                                                                            distortion_coefficients)
-            # # Draw a square around the markers
-            # cv2.aruco.drawDetectedMarkers(frame, corners)
-            #
-            # # Draw Axis
-            # cv2.aruco.drawAxis(frame, matrix_coefficients, distortion_coefficients, rvec, tvec, 0.02)
+            # Draw a square around the markers
+            cv2.aruco.drawDetectedMarkers(frame, corners)
+
+            # Draw Axis
+            cv2.aruco.drawAxis(frame, matrix_coefficients, distortion_coefficients, rvec, tvec, 0.02)
 
             x = tvec[0][0][0] * 100
             y = tvec[0][0][1] * -100
@@ -209,11 +209,6 @@ def goto(current, target):
     x_target = target[0]
     y_target = target[1]
 
-    # x_current, y_current, orientation = get_position_and_orientation(frame, aruco_dict_type, k, d)
-    #
-    # if x_current is None:
-    #     return
-
     # Transform target coordinates to the robot's coordinate system
     target_robot_x, target_robot_y = transform_to_robot_coords(x_target, y_target, x_current, y_current, orientation)
 
@@ -310,6 +305,16 @@ def get_robot_pos_and_ori(frame, aruco_dict_type, matrix_coefficients, distortio
     return x_current, y_current, orientation
 
 
+def check_pos(current, target, bias):
+    """
+        Check if pos is at goal with bias
+    """
+    if target[0] + bias > current[0] > target[0] - bias and target[1] + bias > current[1] > target[1] - bias:
+        return True
+    else:
+        return False
+
+
 """Load Social-LSTM model"""
 predictor = Predictor(MODEL_NUM, EPOCH)
 
@@ -335,7 +340,7 @@ time.sleep(0.5)
 
 video_lock = threading.Lock()
 
-target = tuple(TARGET_POS)
+target = FINAL_TARGET
 target_lock = threading.Lock()
 
 
@@ -409,9 +414,12 @@ while True:
     """If robot detected"""
     if ROBOT_ID in marker_pos:
         robot_pos = marker_pos[ROBOT_ID]
+        if check_pos(robot_pos, FINAL_TARGET, 1):
+            FINAL_TARGET = (-FINAL_TARGET[0], -FINAL_TARGET[1])
+            print("switch target!")
 
         if obstacle_predictions:
-            xref = compute_xref(robot_pos, TARGET_POS, HORIZON_LENGTH, NMPC_TIMESTEP)
+            xref = compute_xref(robot_pos, np.array(FINAL_TARGET), HORIZON_LENGTH, NMPC_TIMESTEP)
             # vel, _ = compute_velocity(robot_pos, [], xref)
             vel, _ = compute_velocity(robot_pos, obstacle_predictions, xref)
             target_x = robot_pos[0] + vel[0] * NMPC_TIMESTEP * 5
@@ -422,7 +430,7 @@ while True:
         else:
             print("simple go")
             with target_lock:
-                target = tuple(TARGET_POS)
+                target = FINAL_TARGET
 
     robot_pos_scaled = (robot_pos[0] / X_SCALE, robot_pos[1] / Y_SCALE) if robot_pos is not None else None
     plotter.plot_trajectory_and_robot(OBS_LENGTH, predicted_trajectories,
