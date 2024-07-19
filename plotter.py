@@ -75,17 +75,19 @@ class TrajectoryPlotter:
 
         """Plot additional points"""
         if current is not None:
-            self.ax.plot(current[0] * X_SCALE, current[1] * Y_SCALE, 'mo', label='Current', markersize=10)
+            self.ax.plot(current[0], current[1], 'mo', label='Current', markersize=10)
 
         if target is not None:
-            self.ax.plot(target[0] * X_SCALE, target[1] * Y_SCALE, 'g*', label='Target', markersize=10)
+            self.ax.plot(target[0], target[1], 'g*', label='Target', markersize=10)
 
         """Plot arrow from current to target"""
         if current is not None and target is not None:
-            self.ax.annotate('', xy=(target[0] * X_SCALE, target[1] * Y_SCALE),
-                             xytext=(current[0] * X_SCALE, current[1] * Y_SCALE),
+            self.ax.annotate('', xy=(target[0], target[1]),
+                             xytext=(current[0], current[1]),
                              arrowprops=dict(arrowstyle="-", color='grey', linestyle='dashed', lw=1.5))
 
-        self.ax.legend()
+        handles, _ = self.ax.get_legend_handles_labels()
+        if handles:
+            self.ax.legend()
         plt.draw()
         plt.pause(0.001)
