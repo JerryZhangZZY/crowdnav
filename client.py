@@ -12,8 +12,9 @@ from predictor import Predictor
 
 """Environment settings"""
 ROBOT_ID = 0
-# FINAL_TARGET = (0, 0)
-FINAL_TARGET = (-10, 7)
+FINAL_TARGET = (0, 0)
+# FINAL_TARGET = (-1, 0.5)
+POS_BIAS = 0.1
 
 """ArUco settings"""
 ARUCO_TYPE = cv2.aruco.DICT_4X4_100
@@ -25,16 +26,17 @@ OBS_LENGTH = 5
 PRED_LENGTH = 8
 MODEL_NUM = 3
 EPOCH = 139
-X_SCALE = 25
-Y_SCALE = 25
+X_SCALE = 2
+Y_SCALE = 2
 
 """NMPC settings"""
-ANTI_COLLISION_GAIN = 5
+ANTI_COLLISION_GAIN = 0.12
 HORIZON_LENGTH = PRED_LENGTH
 # HORIZON_LENGTH = 3
 NMPC_TIMESTEP = 0.3
-ROBOT_RADIUS = 3
-V_MAX = 5
+ROBOT_RADIUS = 0.1
+V_MAX = 0.8
+V_MIN = 0.2
 Qc = 5.0
 kappa = 4.0
 
@@ -55,11 +57,14 @@ def compute_xref(start, goal, number_of_steps, timestep):
     """
     dir_vec = goal - start
     norm = np.linalg.norm(dir_vec)
-    if norm < 0.3:
+    if norm < POS_BIAS:
         goal = start
+    elif norm > (POS_BIAS * 5):
+        dir_vec = dir_vec / norm
+        goal = start + dir_vec * V_MAX * timestep * number_of_steps
     else:
         dir_vec = dir_vec / norm
-        start = start + dir_vec * timestep
+        start = start + dir_vec * V_MIN * timestep
     return np.linspace(start, goal, number_of_steps).reshape((2 * number_of_steps))
 
 
@@ -160,17 +165,12 @@ def get_marker_info(frame, robot_id, aruco_dict_type, matrix_coefficients, disto
     robot_pos_and_ori = None
     if ids is not None:
         for i in range(len(ids)):
-            rvec, tvec, markerPoints = cv2.aruco.estimatePoseSingleMarkers(corners[i], 0.02, matrix_coefficients,
-
-                                                                           distortion_coefficients)
-            # Draw a square around the markers
+            rvec, tvec, markerPoints = cv2.aruco.estimatePoseSingleMarkers(corners[i], 0.15, matrix_coefficients, distortion_coefficients)
             cv2.aruco.drawDetectedMarkers(frame, corners)
-
-            # Draw Axis
             cv2.aruco.drawAxis(frame, matrix_coefficients, distortion_coefficients, rvec, tvec, 0.02)
 
-            x = tvec[0][0][0] * 100
-            y = tvec[0][0][1] * -100
+            x = tvec[0][0][0]
+            y = -tvec[0][0][1]
 
             if ids[i] == robot_id:
                 """Convert the rotation vector to a rotation matrix"""
@@ -217,7 +217,6 @@ def go(orientation, target_speed, max_speed, max_control):
     if not HEADLESS_MODE:
         if abs(orientation) > 5:
             global previous_rotation_error
-            print(previous_rotation_error)
             rotation_error = -orientation
             rotation_d_error = rotation_error - previous_rotation_error
             previous_rotation_error = rotation_error
@@ -319,9 +318,9 @@ while True:
         robot_ori = robot_pos_and_ori[2]
 
         """Switch target"""
-        if check_pos(robot_pos, FINAL_TARGET, 1):
-            FINAL_TARGET = (-FINAL_TARGET[0], -FINAL_TARGET[1])
-            print("Switch target!")
+        # if check_pos(robot_pos, FINAL_TARGET, POS_BIAS):
+        #     FINAL_TARGET = (-FINAL_TARGET[0], -FINAL_TARGET[1])
+        #     print("Switch target!")
 
         """Compute reference points"""
         xref = compute_xref(robot_pos, np.array(FINAL_TARGET), HORIZON_LENGTH, NMPC_TIMESTEP)
@@ -329,7 +328,7 @@ while True:
         vel, _ = compute_velocity(robot_pos, obstacle_predictions, xref)
 
         """Print power percentage"""
-        power = ((vel[0] ** 2) + (vel[1] ** 2)) / 25
+        power = ((vel[0] ** 2) + (vel[1] ** 2)) / (V_MAX ** 2)
         block = int(round(50 * power))
         bar = "#" * block + "-" * (50 - block)
         print(f"Power:[{bar}]")

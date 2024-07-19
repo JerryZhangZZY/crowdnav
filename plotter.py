@@ -3,8 +3,8 @@ import matplotlib as mpl
 
 mpl.use('macosx')
 
-X_SCALE = 25
-Y_SCALE = 25
+X_SCALE = 2
+Y_SCALE = 2
 
 
 class TrajectoryPlotter:
@@ -50,8 +50,8 @@ class TrajectoryPlotter:
         self.ax.set_ylabel('Y')
         self.ax.set_title('Observer')
         self.ax.set_aspect('equal', adjustable='box')
-        self.ax.set_xlim(-18, 18)
-        self.ax.set_ylim(-11, 11)
+        self.ax.set_xlim(-1.8, 1.8)
+        self.ax.set_ylim(-1.1, 1.1)
 
         """Plot observed points"""
         if predicted_trajectories is not None and predicted_trajectories is not None:
