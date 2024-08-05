@@ -106,10 +106,18 @@ class Predictor:
                                                            [prev_grid], [nodes_present[obs_length - 1]], hidden_states,
                                                            cell_states)
             mux, muy, sx, sy, corr = getCoef(outputs)
-            next_x, next_y = sample_gaussian_2d(mux.data, muy.data, sx.data, sy.data, corr.data,
-                                                nodes_present[obs_length - 1])
-            ret_nodes[tstep + 1, :, 0] = next_x
-            ret_nodes[tstep + 1, :, 1] = next_y
+            '''
+            Use random sampling
+            '''
+            # next_x, next_y = sample_gaussian_2d(mux.data, muy.data, sx.data, sy.data, corr.data,
+            #                                     nodes_present[obs_length - 1])
+            # ret_nodes[tstep + 1, :, 0] = next_x
+            # ret_nodes[tstep + 1, :, 1] = next_y
+            '''
+            Use mean points directly
+            '''
+            ret_nodes[tstep + 1, :, 0] = mux.data
+            ret_nodes[tstep + 1, :, 1] = muy.data
             list_of_nodes = Variable(torch.LongTensor(nodes_present[obs_length - 1]), requires_grad=False).to(
                 torch.device("cpu"))
             current_nodes = torch.index_select(ret_nodes[tstep + 1], 0, list_of_nodes)
