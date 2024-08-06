@@ -50,8 +50,8 @@ class TrajectoryPlotter:
         self.ax.set_ylabel('Y')
         self.ax.set_title('Observer')
         self.ax.set_aspect('equal', adjustable='box')
-        self.ax.set_xlim(-1.8, 1.8)
-        self.ax.set_ylim(-1.1, 1.1)
+        self.ax.set_xlim(-2.3, 1.8)
+        self.ax.set_ylim(-1.1, 1.2)
 
         """Plot observed points"""
         if predicted_trajectories is not None and predicted_trajectories is not None:

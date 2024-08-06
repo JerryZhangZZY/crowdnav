@@ -3,7 +3,6 @@ import time
 import math
 import socket
 import numpy as np
-import threading
 
 from scipy.optimize import minimize, Bounds
 
@@ -13,7 +12,9 @@ from predictor import Predictor
 """Environment settings"""
 ROBOT_ID = 0
 FINAL_TARGET = (0, 0)
-# FINAL_TARGET = (-1, 0.5)
+SWITCH_TARGET = False
+TARGET_A = (1.5, 0.9)
+TARGET_B = (-2, -0.8)
 POS_BIAS = 0.1
 
 """ArUco settings"""
@@ -34,7 +35,7 @@ ANTI_COLLISION_GAIN = 0.12
 HORIZON_LENGTH = PRED_LENGTH
 # HORIZON_LENGTH = 3
 NMPC_TIMESTEP = 0.3
-ROBOT_RADIUS = 0.1
+ROBOT_RADIUS = 0.15
 V_MAX = 0.8
 V_MIN = 0.2
 Qc = 5.0
@@ -264,7 +265,7 @@ height = 1080
 video.set(cv2.CAP_PROP_FRAME_WIDTH, width)
 video.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
 # video.set(cv2.CAP_PROP_AUTOFOCUS, 0)
-# video.set(cv2.CAP_PROP_FOCUS, 1)
+# video.set(cv2.CAP_PROP_FOCUS, 10)
 time.sleep(0.5)
 
 while True:
@@ -318,9 +319,13 @@ while True:
         robot_ori = robot_pos_and_ori[2]
 
         """Switch target"""
-        # if check_pos(robot_pos, FINAL_TARGET, POS_BIAS):
-        #     FINAL_TARGET = (-FINAL_TARGET[0], -FINAL_TARGET[1])
-        #     print("Switch target!")
+        if SWITCH_TARGET:
+            if check_pos(robot_pos, FINAL_TARGET, POS_BIAS):
+                if FINAL_TARGET == TARGET_A:
+                    FINAL_TARGET = TARGET_B
+                else:
+                    FINAL_TARGET = TARGET_A
+                print("Switch target!")
 
         """Compute reference points"""
         xref = compute_xref(robot_pos, np.array(FINAL_TARGET), HORIZON_LENGTH, NMPC_TIMESTEP)
