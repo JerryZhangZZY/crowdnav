@@ -304,48 +304,48 @@ while True:
         if frame_data:
             x_seq.append(np.array(frame_data))
 
-    predicted_trajectories = None
+    history_coords, pred_gaussians = None, None
     obstacle_predictions = []
     if x_seq:
-        predicted_trajectories = predictor.predict_trajectory(x_seq, OBS_LENGTH, PRED_LENGTH, [640, 480])
-        obstacle_predictions = get_prediction_array(predicted_trajectories)
+        history_coords, pred_gaussians = predictor.predict_trajectory(x_seq, OBS_LENGTH, PRED_LENGTH, [640, 480])
+        # obstacle_predictions = get_prediction_array(predicted_trajectories)
 
     robot_pos = None
     current_target = None
-
-    """If robot detected"""
-    if robot_pos_and_ori is not None:
-        robot_pos = robot_pos_and_ori[:2]
-        robot_ori = robot_pos_and_ori[2]
-
-        """Switch target"""
-        if SWITCH_TARGET:
-            if check_pos(robot_pos, FINAL_TARGET, POS_BIAS):
-                if FINAL_TARGET == TARGET_A:
-                    FINAL_TARGET = TARGET_B
-                else:
-                    FINAL_TARGET = TARGET_A
-                print("Switch target!")
-
-        """Compute reference points"""
-        xref = compute_xref(robot_pos, np.array(FINAL_TARGET), HORIZON_LENGTH, NMPC_TIMESTEP)
-        """Apply NMPC to get control values"""
-        vel, _ = compute_velocity(robot_pos, obstacle_predictions, xref)
-
-        """Print power percentage"""
-        power = ((vel[0] ** 2) + (vel[1] ** 2)) / (V_MAX ** 2)
-        block = int(round(50 * power))
-        bar = "#" * block + "-" * (50 - block)
-        print(f"Power:[{bar}]")
-
-        """Motion control"""
-        go(robot_ori, vel, V_MAX, 127)
-
-        """Target position at next timestep"""
-        current_target = (robot_pos[0] + (vel[0] * NMPC_TIMESTEP), robot_pos[1] + (vel[1] * NMPC_TIMESTEP))
+    #
+    # """If robot detected"""
+    # if robot_pos_and_ori is not None:
+    #     robot_pos = robot_pos_and_ori[:2]
+    #     robot_ori = robot_pos_and_ori[2]
+    #
+    #     """Switch target"""
+    #     if SWITCH_TARGET:
+    #         if check_pos(robot_pos, FINAL_TARGET, POS_BIAS):
+    #             if FINAL_TARGET == TARGET_A:
+    #                 FINAL_TARGET = TARGET_B
+    #             else:
+    #                 FINAL_TARGET = TARGET_A
+    #             print("Switch target!")
+    #
+    #     """Compute reference points"""
+    #     xref = compute_xref(robot_pos, np.array(FINAL_TARGET), HORIZON_LENGTH, NMPC_TIMESTEP)
+    #     """Apply NMPC to get control values"""
+    #     vel, _ = compute_velocity(robot_pos, obstacle_predictions, xref)
+    #
+    #     """Print power percentage"""
+    #     power = ((vel[0] ** 2) + (vel[1] ** 2)) / (V_MAX ** 2)
+    #     block = int(round(50 * power))
+    #     bar = "#" * block + "-" * (50 - block)
+    #     print(f"Power:[{bar}]")
+    #
+    #     """Motion control"""
+    #     go(robot_ori, vel, V_MAX, 127)
+    #
+    #     """Target position at next timestep"""
+    #     current_target = (robot_pos[0] + (vel[0] * NMPC_TIMESTEP), robot_pos[1] + (vel[1] * NMPC_TIMESTEP))
 
     """Drawing real-time predictive trajectories"""
-    plotter.plot_trajectory_and_robot(OBS_LENGTH, predicted_trajectories,
+    plotter.plot_trajectory_and_robot(OBS_LENGTH, history_coords, pred_gaussians,
                                       robot_pos,
                                       current_target)
 

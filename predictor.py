@@ -1,5 +1,7 @@
 import os
 import pickle
+import time
+
 import torch
 from torch.autograd import Variable
 import numpy as np
@@ -81,42 +83,79 @@ class Predictor:
         obs_nodes, obs_nodesPresent, obs_grid = nodes[:obs_length], nodesPresent[:obs_length], grid_seq[:obs_length]
 
         """Perform trajectory prediction"""
-        predicted_trajectories = self.sample(obs_nodes, obs_nodesPresent, obs_grid, obs_length, pred_length, dimensions)
+        history_coords, pred_gaussians = self.sample(obs_nodes, obs_nodesPresent, obs_grid, obs_length, pred_length, dimensions)
 
-        return predicted_trajectories
+        return history_coords, pred_gaussians
+
+    # def sample(self, nodes, nodes_present, grid, obs_length, pred_length, dimensions):
+    #     num_nodes = nodes.shape[1]
+    #     hidden_states = Variable(torch.zeros(num_nodes, self.net.args.rnn_size), requires_grad=False).to(
+    #         torch.device("cpu"))
+    #     cell_states = Variable(torch.zeros(num_nodes, self.net.args.rnn_size), requires_grad=False).to(
+    #         torch.device("cpu"))
+    #
+    #     for tstep in range(obs_length - 1):
+    #         out_obs, hidden_states, cell_states = self.net(nodes[tstep].view(1, num_nodes, 2), [grid[tstep]],
+    #                                                        [nodes_present[tstep]], hidden_states, cell_states)
+    #
+    #     ret_nodes = Variable(torch.zeros(obs_length + pred_length, num_nodes, 2), requires_grad=False).to(
+    #         torch.device("cpu"))
+    #     ret_nodes[:obs_length, :, :] = nodes.clone()
+    #     prev_grid = grid[-1].clone()
+    #
+    #     for tstep in range(obs_length - 1, pred_length + obs_length - 1):
+    #         outputs, hidden_states, cell_states = self.net(ret_nodes[tstep].view(1, num_nodes, 2),
+    #                                                        [prev_grid], [nodes_present[obs_length - 1]], hidden_states,
+    #                                                        cell_states)
+    #         mux, muy, sx, sy, corr = getCoef(outputs)
+    #         ret_nodes[tstep + 1, :, 0] = mux.data
+    #         ret_nodes[tstep + 1, :, 1] = muy.data
+    #         list_of_nodes = Variable(torch.LongTensor(nodes_present[obs_length - 1]), requires_grad=False).to(
+    #             torch.device("cpu"))
+    #         current_nodes = torch.index_select(ret_nodes[tstep + 1], 0, list_of_nodes)
+    #         prev_grid = getGridMaskInference(current_nodes.data.cpu().numpy(), dimensions,
+    #                                          self.saved_args.neighborhood_size, self.saved_args.grid_size)
+    #         prev_grid = Variable(torch.from_numpy(prev_grid).float(), requires_grad=False).to(torch.device("cpu"))
+    #
+    #     return ret_nodes
+
 
     def sample(self, nodes, nodes_present, grid, obs_length, pred_length, dimensions):
         num_nodes = nodes.shape[1]
-        hidden_states = Variable(torch.zeros(num_nodes, self.net.args.rnn_size), requires_grad=False).to(
-            torch.device("cpu"))
-        cell_states = Variable(torch.zeros(num_nodes, self.net.args.rnn_size), requires_grad=False).to(
-            torch.device("cpu"))
+        hidden_states = Variable(torch.zeros(num_nodes, self.net.args.rnn_size), requires_grad=False).to(torch.device("cpu"))
+        cell_states = Variable(torch.zeros(num_nodes, self.net.args.rnn_size), requires_grad=False).to(torch.device("cpu"))
 
         for tstep in range(obs_length - 1):
-            out_obs, hidden_states, cell_states = self.net(nodes[tstep].view(1, num_nodes, 2), [grid[tstep]],
-                                                           [nodes_present[tstep]], hidden_states, cell_states)
+            out_obs, hidden_states, cell_states = self.net(
+                nodes[tstep].view(1, num_nodes, 2), [grid[tstep]], [nodes_present[tstep]], hidden_states, cell_states
+            )
 
-        ret_nodes = Variable(torch.zeros(obs_length + pred_length, num_nodes, 2), requires_grad=False).to(
-            torch.device("cpu"))
+        # Initialize lists to store results
+        history_coords = []  # List for actual history coordinates [x, y]
+        pred_gaussians = []  # List for predicted Gaussian parameters [mux, muy, sx, sy, corr]
+
+        # Store actual history coordinates
+        for tstep in range(obs_length):
+            history_coords.append(nodes[tstep].cpu().numpy().tolist())
+
+        ret_nodes = Variable(torch.zeros(obs_length + pred_length, num_nodes, 2), requires_grad=False).to(torch.device("cpu"))
         ret_nodes[:obs_length, :, :] = nodes.clone()
         prev_grid = grid[-1].clone()
 
         for tstep in range(obs_length - 1, pred_length + obs_length - 1):
-            outputs, hidden_states, cell_states = self.net(ret_nodes[tstep].view(1, num_nodes, 2),
-                                                           [prev_grid], [nodes_present[obs_length - 1]], hidden_states,
-                                                           cell_states)
+            outputs, hidden_states, cell_states = self.net(
+                ret_nodes[tstep].view(1, num_nodes, 2), [prev_grid], [nodes_present[obs_length - 1]], hidden_states, cell_states
+            )
             mux, muy, sx, sy, corr = getCoef(outputs)
-            # next_x, next_y = sample_gaussian_2d(mux.data, muy.data, sx.data, sy.data, corr.data,
-            #                                     nodes_present[obs_length - 1])
-            # ret_nodes[tstep + 1, :, 0] = next_x
-            ret_nodes[tstep + 1, :, 0] = mux.data
-            # ret_nodes[tstep + 1, :, 1] = next_y
-            ret_nodes[tstep + 1, :, 1] = muy.data
-            list_of_nodes = Variable(torch.LongTensor(nodes_present[obs_length - 1]), requires_grad=False).to(
-                torch.device("cpu"))
-            current_nodes = torch.index_select(ret_nodes[tstep + 1], 0, list_of_nodes)
-            prev_grid = getGridMaskInference(current_nodes.data.cpu().numpy(), dimensions,
-                                             self.saved_args.neighborhood_size, self.saved_args.grid_size)
-            prev_grid = Variable(torch.from_numpy(prev_grid).float(), requires_grad=False).to(torch.device("cpu"))
 
-        return ret_nodes
+            for node_idx in range(num_nodes):
+                pred_gaussians.append([mux[0, node_idx].item(), muy[0, node_idx].item(), sx[0, node_idx].item(), sy[0, node_idx].item(), corr[0, node_idx].item()])
+
+            ret_nodes[tstep + 1, :, 0] = mux.data
+            ret_nodes[tstep + 1, :, 1] = muy.data
+
+            list_of_nodes = Variable(torch.LongTensor(nodes_present[obs_length - 1]), requires_grad=False).to(torch.device("cpu"))
+            current_nodes = torch.index_select(ret_nodes[tstep + 1], 0, list_of_nodes)
+            prev_grid = getGridMaskInference(current_nodes.data.cpu().numpy(), dimensions, self.saved_args.neighborhood_size, self.saved_args.grid_size)
+            prev_grid = Variable(torch.from_numpy(prev_grid).float(), requires_grad=False).to(torch.device("cpu"))
+        return history_coords, pred_gaussians
