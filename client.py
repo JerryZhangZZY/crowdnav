@@ -10,6 +10,14 @@ from scipy.stats import chi2
 from plotter import TrajectoryPlotter
 from predictor import Predictor
 
+"""Network settings"""
+ROBOT_IP = '192.168.0.193'
+ROBOT_PORT = 12345
+
+"""Camera settings"""
+CAMERA_WIDTH = 1920
+CAMERA_HEIGHT = 1080
+
 """Environment settings"""
 ROBOT_ID = 0
 FINAL_TARGET = (0, 0)
@@ -148,6 +156,10 @@ def quickhull(points):
 
 
 def sample_ellipse_points(mu_x, mu_y, sigma_x, sigma_y, corr, p):
+    """
+    Crop the 2D Gaussian distribution according to the probability and compute the coordinates of the four vertices
+    of the ellipsoid shape
+    """
     df = 2
     chi2_val = chi2.ppf(p, df)
     alpha = np.sqrt(chi2_val)
@@ -166,6 +178,9 @@ def sample_ellipse_points(mu_x, mu_y, sigma_x, sigma_y, corr, p):
 
 
 def calculate_hull(pred_gaussians, p):
+    """
+    Calculate convex hull for each pedestrian and return a list of polygons
+    """
     polygons = []
     if pred_gaussians:
         num_pedestrians = len(pred_gaussians[0])
@@ -178,8 +193,6 @@ def calculate_hull(pred_gaussians, p):
                 all_points.extend(ellipse_points)
             all_points = np.array(all_points)
             hull_points = quickhull(all_points)
-            # plot_points(all_points, hull_points)
-            # time.sleep(1000)
             polygons.append(Polygon(hull_points))
     return polygons
 
@@ -201,29 +214,6 @@ def collision_cost_with_polygon(robot_point, hull_polygon):
     nearest_point_on_hull = hull_line.interpolate(hull_line.project(robot_point))
     d = robot_point.distance(nearest_point_on_hull) - ROBOT_RADIUS
     return Qc / (1 + np.exp(kappa * (d - 2 * ROBOT_RADIUS)))
-
-
-# def total_collision_cost(robot, pred_gaussians):
-#     """
-#     Calculate total collision cost
-#     """
-#     total_cost = 0
-#     if pred_gaussians:
-#         for i in range(HORIZON_LENGTH):
-#             for gaussian_params in pred_gaussians[i]:
-#                 mux, muy, sx, sy, corr = gaussian_params
-#                 rob = robot[2 * i: 2 * i + 2]
-#                 obs = np.array([mux, muy])
-#                 total_cost += collision_cost(rob, obs)
-#     return total_cost
-#
-#
-# def collision_cost(x0, x1):
-#     """
-#     Calculate collision cost
-#     """
-#     d = np.linalg.norm(x0 - x1)
-#     return Qc / (1 + np.exp(kappa * (d - 2 * ROBOT_RADIUS)))
 
 
 def update_state(x0, u, timestep):
@@ -314,6 +304,9 @@ def go(orientation, target_speed, max_speed, max_control):
 
 
 def send_control(vertical, lateral, rotation):
+    """
+    Send control command to robot
+    """
     message = f"{vertical},{lateral},{rotation}"
     try:
         client_socket.sendall(message.encode('utf-8'))
@@ -352,26 +345,34 @@ def scale_coords_and_gaussians(obs_pos, pred_gaussians, scale):
     return scaled_obs_pos, scaled_pred_gaussians
 
 
+"""Connect to robot server"""
+print(f"\033[34mConnecting to {ROBOT_IP}:{ROBOT_PORT}\033[0m")
+client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+client_socket.connect((ROBOT_IP, ROBOT_PORT))
+print("\033[1;32mRobot connected successfully\033[0m")
+
 """Load Social-LSTM model"""
 predictor = Predictor(MODEL_NUM, EPOCH)
+print("\033[1;32mModel loaded successfully\033[0m")
 
 """Prepare trajectory plotter"""
 plotter = TrajectoryPlotter()
 
 history_pos = {}
 
-client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-client_socket.connect(('192.168.0.193', 12345))
-
+"""Load calibration profile"""
+print(f"\033[34mLoading calibration profile\033[0m")
 k = np.load(CALIBRATION_MAT_PATH)
 d = np.load(DISTORTION_CO_PATH)
+print("\033[1;32mCalibration profile loaded successfully\033[0m")
 
+"""Prepare camera"""
+print(f"\033[34mSetting up camera\033[0m")
 video = cv2.VideoCapture(0)
-width = 1920
-height = 1080
-video.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-video.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-time.sleep(0.5)
+video.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
+video.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
+time.sleep(0.2)
+print("\033[1;32mCamera set up successfully\033[0m")
 
 while True:
     previous_time = time.time()

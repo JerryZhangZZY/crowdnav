@@ -29,7 +29,7 @@ class STGraph:
                     self.nodes[t][ped_id] = (x, y)
                 else:
                     self.nodes[t][ped_id] = (x, y)
-                # Add temporal edges (self-loop in this context)
+                """Add temporal edges (self-loop in this context)"""
                 if t > 0 and ped_id in self.nodes[t - 1]:
                     prev_x, prev_y = self.nodes[t - 1][ped_id]
                     self.edges[t][(ped_id, ped_id)] = ((prev_x, prev_y), (x, y))
@@ -58,11 +58,11 @@ class Predictor:
 
         checkpoint_path = os.path.join(self.model_path, f'social_lstm_model_{self.epoch}.tar')
         if os.path.isfile(checkpoint_path):
-            print('Loading checkpoint')
+            print(f"\033[34mLoading checkpoint\033[0m")
             checkpoint = torch.load(checkpoint_path)
             model_epoch = checkpoint['epoch']
             net.load_state_dict(checkpoint['state_dict'])
-            print(f'Loaded checkpoint at epoch {model_epoch}')
+            print(f"\033[34mCheckpoint loaded at epoch {model_epoch}\033[0m")
 
         return net, saved_args
 
@@ -96,11 +96,11 @@ class Predictor:
                 nodes[tstep].view(1, num_nodes, 2), [grid[tstep]], [nodes_present[tstep]], hidden_states, cell_states
             )
 
-        # Initialize lists to store results
-        obs_pos = []  # List for actual history coordinates [x, y]
-        pred_gaussians = []  # List for predicted Gaussian parameters [mux, muy, sx, sy, corr]
+        """Initialize lists to store results"""
+        obs_pos = []
+        pred_gaussians = []
 
-        # Store actual history coordinates
+        """Store actual history coordinates"""
         for tstep in range(obs_length):
             obs_pos.append(nodes[tstep].cpu().numpy().tolist())
 
@@ -114,13 +114,13 @@ class Predictor:
             )
             mux, muy, sx, sy, corr = getCoef(outputs)
 
-            # Initialize list for this time step's Gaussian parameters
+            """Initialize list for this time step's Gaussian parameters"""
             gaussians_timestep = []
 
             for node_idx in range(num_nodes):
                 gaussians_timestep.append([mux[0, node_idx].item(), muy[0, node_idx].item(), sx[0, node_idx].item(), sy[0, node_idx].item(), corr[0, node_idx].item()])
 
-            # Append the list of this time step's Gaussian parameters to pred_gaussians
+            """Append the list of this time step's Gaussian parameters to pred_gaussians"""
             pred_gaussians.append(gaussians_timestep)
 
             ret_nodes[tstep + 1, :, 0] = mux.data
