@@ -4,9 +4,9 @@ import math
 import socket
 import numpy as np
 
+from shapely.geometry import Point, Polygon, LineString
 from scipy.optimize import minimize, Bounds
-from scipy.spatial import ConvexHull
-from scipy.stats import chi2, multivariate_normal
+from scipy.stats import chi2
 from plotter import TrajectoryPlotter
 from predictor import Predictor
 
@@ -14,8 +14,8 @@ from predictor import Predictor
 ROBOT_ID = 0
 FINAL_TARGET = (0, 0)
 SWITCH_TARGET = False
-TARGET_A = (1.5, 0.9)
-TARGET_B = (-2, -0.8)
+TARGET_A = (1.8, 0.8)
+TARGET_B = (-1.8, -0.8)
 POS_BIAS = 0.1
 
 """ArUco settings"""
@@ -29,13 +29,13 @@ PRED_LENGTH = 8
 MODEL_NUM = 3
 EPOCH = 139
 SCALE = 3
-ALPHA = 0.9
+P = 0.5
 
 """NMPC settings"""
 HORIZON_LENGTH = PRED_LENGTH
 # HORIZON_LENGTH = 3
 NMPC_TIMESTEP = 0.3
-ROBOT_RADIUS = 0.15
+ROBOT_RADIUS = 0.1
 V_MAX = 0.8
 V_MIN = 0.2
 Qc = 0.6
@@ -69,7 +69,7 @@ def compute_xref(start, goal, number_of_steps, timestep):
     return np.linspace(start, goal, number_of_steps).reshape((2 * number_of_steps))
 
 
-def compute_velocity(robot_state, pred_gaussians, xref):
+def compute_velocity(robot_state, polygons, xref):
     """
     Calculation of control speed in x, y direction
 
@@ -78,7 +78,7 @@ def compute_velocity(robot_state, pred_gaussians, xref):
     u0 = np.random.rand(2 * HORIZON_LENGTH)
 
     def cost_fn(u):
-        return total_cost(u, robot_state, pred_gaussians, xref)
+        return total_cost(u, robot_state, polygons, xref)
 
     bounds = Bounds(lower_bound, upper_bound)
     res = minimize(cost_fn, u0, method='SLSQP', bounds=bounds)
@@ -86,14 +86,17 @@ def compute_velocity(robot_state, pred_gaussians, xref):
     return velocity, res.x
 
 
-def total_cost(u, robot_state, pred_gaussians, xref):
+def total_cost(u, robot_state, polygons, xref):
     """
     Calculate total cost
     """
     x_robot = update_state(robot_state, u, NMPC_TIMESTEP)
     c1 = tracking_cost(x_robot, xref)
-    c2 = total_collision_cost(x_robot, pred_gaussians)
-    return c1 + c2
+    if polygons:
+        c2 = total_collision_cost(x_robot, polygons)
+        return c1 + c2
+    else:
+        return c1
 
 
 def tracking_cost(x, xref):
@@ -103,27 +106,124 @@ def tracking_cost(x, xref):
     return np.linalg.norm(x - xref)
 
 
-def total_collision_cost(robot, pred_gaussians):
-    """
-    Calculate total collision cost
-    """
-    total_cost = 0
+def quickhull(points):
+    def find_side(p1, p2, p):
+        val = (p[1] - p1[1]) * (p2[0] - p1[0]) - (p2[1] - p1[1]) * (p[0] - p1[0])
+        if val > 0:
+            return 1
+        if val < 0:
+            return -1
+        return 0
+
+    def line_dist(p1, p2, p):
+        return abs((p[1] - p1[1]) * (p2[0] - p1[0]) - (p2[1] - p1[1]) * (p[0] - p1[0]))
+
+    def hull_set(p1, p2, points, side):
+        ind = -1
+        max_dist = 0
+        for i in range(len(points)):
+            temp = line_dist(p1, p2, points[i])
+            if (find_side(p1, p2, points[i]) == side) and (temp > max_dist):
+                ind = i
+                max_dist = temp
+        if ind == -1:
+            hull.append(p1)
+            hull.append(p2)
+            return
+        hull_set(points[ind], p1, points, -find_side(points[ind], p1, p2))
+        hull_set(points[ind], p2, points, -find_side(points[ind], p2, p1))
+
+    hull = []
+    if len(points) < 3:
+        return points.tolist()
+    min_x = np.argmin(points[:, 0])
+    max_x = np.argmax(points[:, 0])
+    hull_set(points[min_x], points[max_x], points, 1)
+    hull_set(points[min_x], points[max_x], points, -1)
+    unique_hull = np.unique(hull, axis=0)
+    """Sorting points to form a correct polygon"""
+    center = np.mean(unique_hull, axis=0)
+    sorted_hull = sorted(unique_hull, key=lambda p: np.arctan2(p[1] - center[1], p[0] - center[0]))
+    return np.array(sorted_hull)
+
+
+def sample_ellipse_points(mu_x, mu_y, sigma_x, sigma_y, corr, p):
+    df = 2
+    chi2_val = chi2.ppf(p, df)
+    alpha = np.sqrt(chi2_val)
+    cov_matrix = np.array([[sigma_x ** 2, corr * sigma_x * sigma_y],
+                           [corr * sigma_x * sigma_y, sigma_y ** 2]])
+
+    eigenvalues, eigenvectors = np.linalg.eigh(cov_matrix)
+    axis_lengths = alpha * np.sqrt(eigenvalues)
+    ellipse_points = np.array([
+        mu_x + axis_lengths[0] * eigenvectors[0, 0], mu_y + axis_lengths[0] * eigenvectors[0, 1],
+        mu_x - axis_lengths[0] * eigenvectors[0, 0], mu_y - axis_lengths[0] * eigenvectors[0, 1],
+        mu_x + axis_lengths[1] * eigenvectors[1, 0], mu_y + axis_lengths[1] * eigenvectors[1, 1],
+        mu_x - axis_lengths[1] * eigenvectors[1, 0], mu_y - axis_lengths[1] * eigenvectors[1, 1]
+    ]).reshape(4, 2)
+    return ellipse_points
+
+
+def calculate_hull(pred_gaussians, p):
+    polygons = []
     if pred_gaussians:
-        for i in range(HORIZON_LENGTH):
-            for gaussian_params in pred_gaussians[i]:
+        num_pedestrians = len(pred_gaussians[0])
+        for ped_index in range(num_pedestrians):
+            all_points = []
+            for i in range(len(pred_gaussians)):
+                gaussian_params = pred_gaussians[i][ped_index]
                 mux, muy, sx, sy, corr = gaussian_params
-                rob = robot[2 * i: 2 * i + 2]
-                obs = np.array([mux, muy])
-                total_cost += collision_cost(rob, obs)
+                ellipse_points = sample_ellipse_points(mux, muy, sx, sy, corr, p)
+                all_points.extend(ellipse_points)
+            all_points = np.array(all_points)
+            hull_points = quickhull(all_points)
+            # plot_points(all_points, hull_points)
+            # time.sleep(1000)
+            polygons.append(Polygon(hull_points))
+    return polygons
+
+
+def total_collision_cost(robot, polygons):
+    total_cost = 0.0
+    num_pedestrians = len(pred_gaussians[0])
+    for ped_index in range(num_pedestrians):
+        polygon = polygons[ped_index]
+        for i in range(len(pred_gaussians)):
+            rob = robot[2 * i: 2 * i + 2]
+            robot_point = Point(rob)
+            total_cost += collision_cost_with_polygon(robot_point, polygon)
     return total_cost
 
 
-def collision_cost(x0, x1):
-    """
-    Calculate collision cost
-    """
-    d = np.linalg.norm(x0 - x1)
+def collision_cost_with_polygon(robot_point, hull_polygon):
+    hull_line = LineString(hull_polygon.exterior.coords)
+    nearest_point_on_hull = hull_line.interpolate(hull_line.project(robot_point))
+    d = robot_point.distance(nearest_point_on_hull) - ROBOT_RADIUS
     return Qc / (1 + np.exp(kappa * (d - 2 * ROBOT_RADIUS)))
+
+
+# def total_collision_cost(robot, pred_gaussians):
+#     """
+#     Calculate total collision cost
+#     """
+#     total_cost = 0
+#     if pred_gaussians:
+#         for i in range(HORIZON_LENGTH):
+#             for gaussian_params in pred_gaussians[i]:
+#                 mux, muy, sx, sy, corr = gaussian_params
+#                 rob = robot[2 * i: 2 * i + 2]
+#                 obs = np.array([mux, muy])
+#                 total_cost += collision_cost(rob, obs)
+#     return total_cost
+#
+#
+# def collision_cost(x0, x1):
+#     """
+#     Calculate collision cost
+#     """
+#     d = np.linalg.norm(x0 - x1)
+#     return Qc / (1 + np.exp(kappa * (d - 2 * ROBOT_RADIUS)))
 
 
 def update_state(x0, u, timestep):
@@ -148,7 +248,7 @@ def get_marker_info(frame, robot_id, aruco_dict_type, matrix_coefficients, disto
                                                                 cameraMatrix=matrix_coefficients,
                                                                 distCoeff=distortion_coefficients)
 
-    pedestrains_pos = {}
+    pedestrians_pos = {}
     robot_pos_and_ori = None
     if ids is not None:
         for i in range(len(ids)):
@@ -177,8 +277,8 @@ def get_marker_info(frame, robot_id, aruco_dict_type, matrix_coefficients, disto
                 orientation = math.degrees(z_rotation)
                 robot_pos_and_ori = (x, y, orientation)
             else:
-                pedestrains_pos[ids[i][0]] = (x, y)
-    return pedestrains_pos, robot_pos_and_ori
+                pedestrians_pos[ids[i][0]] = (x, y)
+    return pedestrians_pos, robot_pos_and_ori
 
 
 def transfer_coords(vector, orientation):
@@ -225,7 +325,7 @@ def send_control(vertical, lateral, rotation):
 
 def check_pos(current, target, bias):
     """
-        Check if pos is at goal with bias
+    Check if pos is at goal with bias
     """
     if target[0] + bias > current[0] > target[0] - bias and target[1] + bias > current[1] > target[1] - bias:
         return True
@@ -233,25 +333,13 @@ def check_pos(current, target, bias):
         return False
 
 
-def scale_coords_and_gaussians(history_coords, pred_gaussians, scale):
-    """
-    Scale the coordinates and Gaussian parameters by the given scale factor.
-
-    Parameters:
-    - history_coords: List of lists containing historical coordinates [x, y]
-    - pred_gaussians: List of lists containing Gaussian parameters [mux, muy, sx, sy, corr]
-    - scale: Scale factor to multiply x, y, mux, muy, sx, sy
-
-    Returns:
-    - scaled_history_coords: Scaled historical coordinates
-    - scaled_pred_gaussians: Scaled Gaussian parameters
-    """
-    scaled_history_coords = []
-    for t in range(len(history_coords)):
+def scale_coords_and_gaussians(obs_pos, pred_gaussians, scale):
+    scaled_obs_pos = []
+    for t in range(len(obs_pos)):
         scaled_coords_t = []
-        for coord in history_coords[t]:
+        for coord in obs_pos[t]:
             scaled_coords_t.append([coord[0] * scale, coord[1] * scale])
-        scaled_history_coords.append(scaled_coords_t)
+        scaled_obs_pos.append(scaled_coords_t)
 
     scaled_pred_gaussians = []
     for gaussians_t in pred_gaussians:
@@ -261,7 +349,7 @@ def scale_coords_and_gaussians(history_coords, pred_gaussians, scale):
             scaled_gaussians_t.append([mux * scale, muy * scale, sx * scale, sy * scale, corr])
         scaled_pred_gaussians.append(scaled_gaussians_t)
 
-    return scaled_history_coords, scaled_pred_gaussians
+    return scaled_obs_pos, scaled_pred_gaussians
 
 
 """Load Social-LSTM model"""
@@ -283,11 +371,10 @@ width = 1920
 height = 1080
 video.set(cv2.CAP_PROP_FRAME_WIDTH, width)
 video.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-# video.set(cv2.CAP_PROP_AUTOFOCUS, 0)
-# video.set(cv2.CAP_PROP_FOCUS, 10)
 time.sleep(0.5)
 
 while True:
+    previous_time = time.time()
     ret, frame = video.read()
     if not ret:
         break
@@ -323,15 +410,15 @@ while True:
         if frame_data:
             x_seq.append(np.array(frame_data))
 
-    history_coords, pred_gaussians = None, None
+    obs_pos, pred_gaussians = None, None
     obstacle_predictions = []
     if x_seq:
-        history_coords, pred_gaussians = predictor.predict_trajectory(x_seq, OBS_LENGTH, PRED_LENGTH, [640, 480])
-        history_coords, pred_gaussians = scale_coords_and_gaussians(history_coords, pred_gaussians, SCALE)
-        # obstacle_predictions = get_prediction_array(predicted_trajectories)
+        obs_pos, pred_gaussians = predictor.predict_trajectory(x_seq, OBS_LENGTH, PRED_LENGTH, [640, 480])
+        obs_pos, pred_gaussians = scale_coords_and_gaussians(obs_pos, pred_gaussians, SCALE)
 
     robot_pos = None
     current_target = None
+    polygons = None
 
     """If robot detected"""
     if robot_pos_and_ori is not None:
@@ -350,7 +437,8 @@ while True:
         """Compute reference points"""
         xref = compute_xref(robot_pos, np.array(FINAL_TARGET), HORIZON_LENGTH, NMPC_TIMESTEP)
         """Apply NMPC to get control values"""
-        vel, _ = compute_velocity(robot_pos, pred_gaussians, xref)
+        polygons = calculate_hull(pred_gaussians, P)
+        vel, _ = compute_velocity(robot_pos, polygons, xref)
 
         """Print power percentage"""
         power = ((vel[0] ** 2) + (vel[1] ** 2)) / (V_MAX ** 2)
@@ -365,10 +453,9 @@ while True:
         current_target = (robot_pos[0] + (vel[0] * NMPC_TIMESTEP), robot_pos[1] + (vel[1] * NMPC_TIMESTEP))
 
     """Drawing real-time predictive trajectories"""
-    plotter.plot_trajectory_and_robot(OBS_LENGTH, history_coords, pred_gaussians,
-                                      robot_pos,
-                                      current_target)
-
+    plotter.plot_trajectory_and_robot(OBS_LENGTH, obs_pos, polygons, robot_pos, current_target)
     cv2.imshow('Camera', frame)
     cv2.waitKey(1) & 0xFF
-    time.sleep(0.2)
+    time_delay = NMPC_TIMESTEP - (time.time() - previous_time)
+    if time_delay > 0:
+        time.sleep(time_delay)
