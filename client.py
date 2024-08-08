@@ -5,7 +5,8 @@ import socket
 import numpy as np
 
 from scipy.optimize import minimize, Bounds
-
+from scipy.spatial import ConvexHull
+from scipy.stats import chi2, multivariate_normal
 from plotter import TrajectoryPlotter
 from predictor import Predictor
 
@@ -27,19 +28,18 @@ OBS_LENGTH = 5
 PRED_LENGTH = 8
 MODEL_NUM = 3
 EPOCH = 139
-X_SCALE = 2
-Y_SCALE = 2
+SCALE = 3
+ALPHA = 0.9
 
 """NMPC settings"""
-ANTI_COLLISION_GAIN = 0.12
 HORIZON_LENGTH = PRED_LENGTH
 # HORIZON_LENGTH = 3
 NMPC_TIMESTEP = 0.3
 ROBOT_RADIUS = 0.15
 V_MAX = 0.8
 V_MIN = 0.2
-Qc = 5.0
-kappa = 4.0
+Qc = 0.6
+kappa = 5
 
 """Headless mode settings"""
 HEADLESS_MODE = False
@@ -69,7 +69,7 @@ def compute_xref(start, goal, number_of_steps, timestep):
     return np.linspace(start, goal, number_of_steps).reshape((2 * number_of_steps))
 
 
-def compute_velocity(robot_state, obstacle_predictions, xref):
+def compute_velocity(robot_state, pred_gaussians, xref):
     """
     Calculation of control speed in x, y direction
 
@@ -78,7 +78,7 @@ def compute_velocity(robot_state, obstacle_predictions, xref):
     u0 = np.random.rand(2 * HORIZON_LENGTH)
 
     def cost_fn(u):
-        return total_cost(u, robot_state, obstacle_predictions, xref)
+        return total_cost(u, robot_state, pred_gaussians, xref)
 
     bounds = Bounds(lower_bound, upper_bound)
     res = minimize(cost_fn, u0, method='SLSQP', bounds=bounds)
@@ -86,13 +86,13 @@ def compute_velocity(robot_state, obstacle_predictions, xref):
     return velocity, res.x
 
 
-def total_cost(u, robot_state, obstacle_predictions, xref):
+def total_cost(u, robot_state, pred_gaussians, xref):
     """
     Calculate total cost
     """
     x_robot = update_state(robot_state, u, NMPC_TIMESTEP)
     c1 = tracking_cost(x_robot, xref)
-    c2 = total_collision_cost(x_robot, obstacle_predictions) * ANTI_COLLISION_GAIN
+    c2 = total_collision_cost(x_robot, pred_gaussians)
     return c1 + c2
 
 
@@ -102,17 +102,19 @@ def tracking_cost(x, xref):
     """
     return np.linalg.norm(x - xref)
 
-def total_collision_cost(robot, obstacles):
+
+def total_collision_cost(robot, pred_gaussians):
     """
     Calculate total collision cost
     """
     total_cost = 0
-    for i in range(HORIZON_LENGTH):
-        for j in range(len(obstacles)):
-            obstacle = obstacles[j]
-            rob = robot[2 * i: 2 * i + 2]
-            obs = obstacle[2 * i: 2 * i + 2]
-            total_cost += collision_cost(rob, obs)
+    if pred_gaussians:
+        for i in range(HORIZON_LENGTH):
+            for gaussian_params in pred_gaussians[i]:
+                mux, muy, sx, sy, corr = gaussian_params
+                rob = robot[2 * i: 2 * i + 2]
+                obs = np.array([mux, muy])
+                total_cost += collision_cost(rob, obs)
     return total_cost
 
 
@@ -134,22 +136,6 @@ def update_state(x0, u, timestep):
     return np.vstack([np.eye(2)] * N) @ x0 + kron @ u * timestep
 
 
-def get_prediction_array(tensor):
-    """
-    Extract the predicted trajectories from the Social-LSTM output and convert the format
-    """
-    last_8_matrices = tensor[-8:]
-    num_rows = last_8_matrices.shape[1]
-    prediction_array = []
-    for row in range(num_rows):
-        concatenated_row = []
-        for matrix in last_8_matrices:
-            scaled_row = [matrix[row][0] * X_SCALE, matrix[row][1] * Y_SCALE]
-            concatenated_row.extend(scaled_row)
-        prediction_array.append(np.array(concatenated_row))
-    return prediction_array
-
-
 def get_marker_info(frame, robot_id, aruco_dict_type, matrix_coefficients, distortion_coefficients):
     """
     Get position of all pedestrians and pos+ori of the robot in frame
@@ -166,7 +152,8 @@ def get_marker_info(frame, robot_id, aruco_dict_type, matrix_coefficients, disto
     robot_pos_and_ori = None
     if ids is not None:
         for i in range(len(ids)):
-            rvec, tvec, markerPoints = cv2.aruco.estimatePoseSingleMarkers(corners[i], 0.15, matrix_coefficients, distortion_coefficients)
+            rvec, tvec, markerPoints = cv2.aruco.estimatePoseSingleMarkers(corners[i], 0.15, matrix_coefficients,
+                                                                           distortion_coefficients)
             cv2.aruco.drawDetectedMarkers(frame, corners)
             cv2.aruco.drawAxis(frame, matrix_coefficients, distortion_coefficients, rvec, tvec, 0.02)
 
@@ -221,7 +208,8 @@ def go(orientation, target_speed, max_speed, max_control):
             rotation_error = -orientation
             rotation_d_error = rotation_error - previous_rotation_error
             previous_rotation_error = rotation_error
-            rotation_control = -min(max_control, max(-max_control, int(ROTATION_P_GAIN * rotation_error + ROTATION_D_GAIN * rotation_d_error)))
+            rotation_control = -min(max_control, max(-max_control,
+                                                     int(ROTATION_P_GAIN * rotation_error + ROTATION_D_GAIN * rotation_d_error)))
     send_control(vertical_control, lateral_control, rotation_control)
 
 
@@ -243,6 +231,37 @@ def check_pos(current, target, bias):
         return True
     else:
         return False
+
+
+def scale_coords_and_gaussians(history_coords, pred_gaussians, scale):
+    """
+    Scale the coordinates and Gaussian parameters by the given scale factor.
+
+    Parameters:
+    - history_coords: List of lists containing historical coordinates [x, y]
+    - pred_gaussians: List of lists containing Gaussian parameters [mux, muy, sx, sy, corr]
+    - scale: Scale factor to multiply x, y, mux, muy, sx, sy
+
+    Returns:
+    - scaled_history_coords: Scaled historical coordinates
+    - scaled_pred_gaussians: Scaled Gaussian parameters
+    """
+    scaled_history_coords = []
+    for t in range(len(history_coords)):
+        scaled_coords_t = []
+        for coord in history_coords[t]:
+            scaled_coords_t.append([coord[0] * scale, coord[1] * scale])
+        scaled_history_coords.append(scaled_coords_t)
+
+    scaled_pred_gaussians = []
+    for gaussians_t in pred_gaussians:
+        scaled_gaussians_t = []
+        for gaussian_params in gaussians_t:
+            mux, muy, sx, sy, corr = gaussian_params
+            scaled_gaussians_t.append([mux * scale, muy * scale, sx * scale, sy * scale, corr])
+        scaled_pred_gaussians.append(scaled_gaussians_t)
+
+    return scaled_history_coords, scaled_pred_gaussians
 
 
 """Load Social-LSTM model"""
@@ -299,7 +318,7 @@ while True:
             if len(positions) == OBS_LENGTH:
                 position = positions[t]
                 """Zoom coordinates"""
-                new_position = np.array([position[0], position[1] / X_SCALE, position[2] / Y_SCALE])
+                new_position = np.array([position[0], position[1] / SCALE, position[2] / SCALE])
                 frame_data.append(new_position)
         if frame_data:
             x_seq.append(np.array(frame_data))
@@ -308,41 +327,42 @@ while True:
     obstacle_predictions = []
     if x_seq:
         history_coords, pred_gaussians = predictor.predict_trajectory(x_seq, OBS_LENGTH, PRED_LENGTH, [640, 480])
+        history_coords, pred_gaussians = scale_coords_and_gaussians(history_coords, pred_gaussians, SCALE)
         # obstacle_predictions = get_prediction_array(predicted_trajectories)
 
     robot_pos = None
     current_target = None
-    #
-    # """If robot detected"""
-    # if robot_pos_and_ori is not None:
-    #     robot_pos = robot_pos_and_ori[:2]
-    #     robot_ori = robot_pos_and_ori[2]
-    #
-    #     """Switch target"""
-    #     if SWITCH_TARGET:
-    #         if check_pos(robot_pos, FINAL_TARGET, POS_BIAS):
-    #             if FINAL_TARGET == TARGET_A:
-    #                 FINAL_TARGET = TARGET_B
-    #             else:
-    #                 FINAL_TARGET = TARGET_A
-    #             print("Switch target!")
-    #
-    #     """Compute reference points"""
-    #     xref = compute_xref(robot_pos, np.array(FINAL_TARGET), HORIZON_LENGTH, NMPC_TIMESTEP)
-    #     """Apply NMPC to get control values"""
-    #     vel, _ = compute_velocity(robot_pos, obstacle_predictions, xref)
-    #
-    #     """Print power percentage"""
-    #     power = ((vel[0] ** 2) + (vel[1] ** 2)) / (V_MAX ** 2)
-    #     block = int(round(50 * power))
-    #     bar = "#" * block + "-" * (50 - block)
-    #     print(f"Power:[{bar}]")
-    #
-    #     """Motion control"""
-    #     go(robot_ori, vel, V_MAX, 127)
-    #
-    #     """Target position at next timestep"""
-    #     current_target = (robot_pos[0] + (vel[0] * NMPC_TIMESTEP), robot_pos[1] + (vel[1] * NMPC_TIMESTEP))
+
+    """If robot detected"""
+    if robot_pos_and_ori is not None:
+        robot_pos = robot_pos_and_ori[:2]
+        robot_ori = robot_pos_and_ori[2]
+
+        """Switch target"""
+        if SWITCH_TARGET:
+            if check_pos(robot_pos, FINAL_TARGET, POS_BIAS):
+                if FINAL_TARGET == TARGET_A:
+                    FINAL_TARGET = TARGET_B
+                else:
+                    FINAL_TARGET = TARGET_A
+                print("Switch target!")
+
+        """Compute reference points"""
+        xref = compute_xref(robot_pos, np.array(FINAL_TARGET), HORIZON_LENGTH, NMPC_TIMESTEP)
+        """Apply NMPC to get control values"""
+        vel, _ = compute_velocity(robot_pos, pred_gaussians, xref)
+
+        """Print power percentage"""
+        power = ((vel[0] ** 2) + (vel[1] ** 2)) / (V_MAX ** 2)
+        block = int(round(50 * power))
+        bar = "#" * block + "-" * (50 - block)
+        print(f"Power:[{bar}]")
+
+        """Motion control"""
+        go(robot_ori, vel, V_MAX, 127)
+
+        """Target position at next timestep"""
+        current_target = (robot_pos[0] + (vel[0] * NMPC_TIMESTEP), robot_pos[1] + (vel[1] * NMPC_TIMESTEP))
 
     """Drawing real-time predictive trajectories"""
     plotter.plot_trajectory_and_robot(OBS_LENGTH, history_coords, pred_gaussians,

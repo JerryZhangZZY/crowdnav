@@ -5,8 +5,8 @@ from matplotlib.patches import Ellipse
 
 mpl.use('macosx')
 
-X_SCALE = 2
-Y_SCALE = 2
+X_SCALE = 1
+Y_SCALE = 1
 
 
 class TrajectoryPlotter:
@@ -138,13 +138,8 @@ class TrajectoryPlotter:
 
         """ Plot predicted Gaussian distributions """
         if pred_gaussians is not None:
-            num_people = len(history_coords[0])  # Number of people
-            num_predictions = len(pred_gaussians) // num_people
-
-            for t in range(num_predictions):
-                idx = t * num_people
-                for i in range(num_people):
-                    mux, muy, sx, sy, corr = pred_gaussians[idx + i]
+            for t, gaussians_timestep in enumerate(pred_gaussians):
+                for i, (mux, muy, sx, sy, corr) in enumerate(gaussians_timestep):
                     plot_gaussian(self.ax, mux * X_SCALE, muy * Y_SCALE, sx * X_SCALE, sy * Y_SCALE, corr)
 
         """ Plot additional points """

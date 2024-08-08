@@ -1,12 +1,11 @@
 import os
 import pickle
-import time
 
 import torch
 from torch.autograd import Variable
 import numpy as np
 from model import SocialLSTM
-from helper import getCoef, sample_gaussian_2d
+from helper import getCoef
 from grid import getSequenceGridMask, getGridMaskInference
 
 
@@ -119,7 +118,6 @@ class Predictor:
     #
     #     return ret_nodes
 
-
     def sample(self, nodes, nodes_present, grid, obs_length, pred_length, dimensions):
         num_nodes = nodes.shape[1]
         hidden_states = Variable(torch.zeros(num_nodes, self.net.args.rnn_size), requires_grad=False).to(torch.device("cpu"))
@@ -148,8 +146,14 @@ class Predictor:
             )
             mux, muy, sx, sy, corr = getCoef(outputs)
 
+            # Initialize list for this time step's Gaussian parameters
+            gaussians_timestep = []
+
             for node_idx in range(num_nodes):
-                pred_gaussians.append([mux[0, node_idx].item(), muy[0, node_idx].item(), sx[0, node_idx].item(), sy[0, node_idx].item(), corr[0, node_idx].item()])
+                gaussians_timestep.append([mux[0, node_idx].item(), muy[0, node_idx].item(), sx[0, node_idx].item(), sy[0, node_idx].item(), corr[0, node_idx].item()])
+
+            # Append the list of this time step's Gaussian parameters to pred_gaussians
+            pred_gaussians.append(gaussians_timestep)
 
             ret_nodes[tstep + 1, :, 0] = mux.data
             ret_nodes[tstep + 1, :, 1] = muy.data
@@ -158,4 +162,5 @@ class Predictor:
             current_nodes = torch.index_select(ret_nodes[tstep + 1], 0, list_of_nodes)
             prev_grid = getGridMaskInference(current_nodes.data.cpu().numpy(), dimensions, self.saved_args.neighborhood_size, self.saved_args.grid_size)
             prev_grid = Variable(torch.from_numpy(prev_grid).float(), requires_grad=False).to(torch.device("cpu"))
+
         return history_coords, pred_gaussians
