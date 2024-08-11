@@ -10,6 +10,9 @@ from scipy.stats import chi2
 from plotter import TrajectoryPlotter
 from predictor import Predictor
 
+"""Convex hull settings"""
+P = 0.5
+
 """Network settings"""
 ROBOT_IP = '192.168.0.193'
 ROBOT_PORT = 12345
@@ -37,7 +40,6 @@ PRED_LENGTH = 8
 MODEL_NUM = 3
 EPOCH = 139
 SCALE = 3
-P = 0.5
 
 """NMPC settings"""
 HORIZON_LENGTH = PRED_LENGTH
@@ -58,6 +60,12 @@ upper_bound = [(1 / np.sqrt(2)) * V_MAX] * HORIZON_LENGTH * 2
 lower_bound = [-(1 / np.sqrt(2)) * V_MAX] * HORIZON_LENGTH * 2
 
 previous_rotation_error = 0
+
+
+def probability_to_alpha(probability):
+    df = 2
+    chi2_val = chi2.ppf(probability, df)
+    return np.sqrt(chi2_val)
 
 
 def compute_xref(start, goal, number_of_steps, timestep):
@@ -155,14 +163,11 @@ def quickhull(points):
     return np.array(sorted_hull)
 
 
-def sample_ellipse_points(mu_x, mu_y, sigma_x, sigma_y, corr, p):
+def sample_ellipse_points(mu_x, mu_y, sigma_x, sigma_y, corr, alpha):
     """
     Crop the 2D Gaussian distribution according to the probability and compute the coordinates of the four vertices
     of the ellipsoid shape
     """
-    df = 2
-    chi2_val = chi2.ppf(p, df)
-    alpha = np.sqrt(chi2_val)
     cov_matrix = np.array([[sigma_x ** 2, corr * sigma_x * sigma_y],
                            [corr * sigma_x * sigma_y, sigma_y ** 2]])
 
@@ -177,7 +182,7 @@ def sample_ellipse_points(mu_x, mu_y, sigma_x, sigma_y, corr, p):
     return ellipse_points
 
 
-def calculate_hull(pred_gaussians, p):
+def calculate_hull(pred_gaussians, alpha):
     """
     Calculate convex hull for each pedestrian and return a list of polygons
     """
@@ -189,7 +194,7 @@ def calculate_hull(pred_gaussians, p):
             for i in range(len(pred_gaussians)):
                 gaussian_params = pred_gaussians[i][ped_index]
                 mux, muy, sx, sy, corr = gaussian_params
-                ellipse_points = sample_ellipse_points(mux, muy, sx, sy, corr, p)
+                ellipse_points = sample_ellipse_points(mux, muy, sx, sy, corr, alpha)
                 all_points.extend(ellipse_points)
             all_points = np.array(all_points)
             hull_points = quickhull(all_points)
@@ -374,6 +379,9 @@ video.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
 time.sleep(0.2)
 print("\033[1;32mCamera set up successfully\033[0m")
 
+"""Convert probability to alpha"""
+alpha = probability_to_alpha(P)
+
 while True:
     previous_time = time.time()
     ret, frame = video.read()
@@ -438,7 +446,7 @@ while True:
         """Compute reference points"""
         xref = compute_xref(robot_pos, np.array(FINAL_TARGET), HORIZON_LENGTH, NMPC_TIMESTEP)
         """Apply NMPC to get control values"""
-        polygons = calculate_hull(pred_gaussians, P)
+        polygons = calculate_hull(pred_gaussians, alpha)
         vel, _ = compute_velocity(robot_pos, polygons, xref)
 
         """Print power percentage"""
