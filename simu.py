@@ -1,8 +1,6 @@
 import numpy as np
 import pybullet as p
 import pybullet_data
-import time
-import math
 import csv
 
 from shapely.geometry import Point, Polygon, LineString
@@ -11,17 +9,18 @@ from scipy.stats import chi2
 from plotter import TrajectoryPlotter
 from predictor import Predictor
 
+"""Convex hull settings"""
 P = 0.01
 
+"""Environment settings"""
+START_POS = [0, 0]
+TARGET_POS = [0, 0]
 RADIUS = 0.3
 ROBOT_COLOR = [1, 0.1, 0.1, 1]
 PEDESTRIAN_COLOR = [0, 0.7, 0, 1]
-
-START_POS = [0, 1]
-TARGET_POS = [0, 1]
-
 TRAJ_DATA_PATH = "pixel_pos.csv"
-INTERPOLATION_NUM = 10
+
+"""Social-LSTM model settings"""
 OBS_LENGTH = 5
 PRED_LENGTH = 8
 MODEL_NUM = 3
@@ -29,6 +28,7 @@ EPOCH = 139
 X_SCALE = 10
 Y_SCALE = -10
 
+"""NMPC settings"""
 HORIZON_LENGTH = PRED_LENGTH
 # HORIZON_LENGTH = 3
 NMPC_TIMESTEP = 0.4
@@ -36,10 +36,16 @@ ROBOT_RADIUS = 0.3
 V_MAX = 1.5
 V_MIN = 0
 Qc = 0.6
-kappa = 5
+kappa = 10
 
 upper_bound = [(1 / np.sqrt(2)) * V_MAX] * HORIZON_LENGTH * 2
 lower_bound = [-(1 / np.sqrt(2)) * V_MAX] * HORIZON_LENGTH * 2
+
+
+def probability_to_alpha(probability):
+    df = 2
+    chi2_val = chi2.ppf(probability, df)
+    return np.sqrt(chi2_val)
 
 
 def create_sphere(radius, color, position):
@@ -107,7 +113,7 @@ def compute_velocity(robot_state, polygons, xref):
         return total_cost(u, robot_state, polygons, xref)
 
     bounds = Bounds(lower_bound, upper_bound)
-    res = minimize(cost_fn, u0, method='SLSQP', bounds=bounds, tol=1e-4)
+    res = minimize(cost_fn, u0, method='SLSQP', bounds=bounds, tol=1e-2)
     velocity = res.x[:2]
     return velocity, res.x
 
@@ -173,14 +179,11 @@ def quickhull(points):
     return np.array(sorted_hull)
 
 
-def sample_ellipse_points(mu_x, mu_y, sigma_x, sigma_y, corr, p):
+def sample_ellipse_points(mu_x, mu_y, sigma_x, sigma_y, corr, alpha):
     """
     Crop the 2D Gaussian distribution according to the probability and compute the coordinates of the four vertices
     of the ellipsoid shape
     """
-    df = 2
-    chi2_val = chi2.ppf(p, df)
-    alpha = np.sqrt(chi2_val)
     cov_matrix = np.array([[sigma_x ** 2, corr * sigma_x * sigma_y],
                            [corr * sigma_x * sigma_y, sigma_y ** 2]])
 
@@ -195,7 +198,7 @@ def sample_ellipse_points(mu_x, mu_y, sigma_x, sigma_y, corr, p):
     return ellipse_points
 
 
-def calculate_hull(pred_gaussians, p):
+def calculate_hull(pred_gaussians, alpha):
     """
     Calculate convex hull for each pedestrian and return a list of polygons
     """
@@ -207,7 +210,7 @@ def calculate_hull(pred_gaussians, p):
             for i in range(len(pred_gaussians)):
                 gaussian_params = pred_gaussians[i][ped_index]
                 mux, muy, sx, sy, corr = gaussian_params
-                ellipse_points = sample_ellipse_points(mux, muy, sx, sy, corr, p)
+                ellipse_points = sample_ellipse_points(mux, muy, sx, sy, corr, alpha)
                 all_points.extend(ellipse_points)
             all_points = np.array(all_points)
             hull_points = quickhull(all_points)
@@ -310,6 +313,8 @@ history_positions = {pid: [] for pid in np.unique(pids)}
 
 collision_count = 0
 
+alpha = probability_to_alpha(P)
+
 """Start simulation"""
 for time_step in time_steps:
 
@@ -367,7 +372,7 @@ for time_step in time_steps:
         obs_pos, pred_gaussians = scale_coords_and_gaussians(obs_pos, pred_gaussians, X_SCALE, Y_SCALE)
 
     xref = compute_xref(np.array(robot_pos[:2]), TARGET_POS, HORIZON_LENGTH, NMPC_TIMESTEP)
-    polygons = calculate_hull(pred_gaussians, P)
+    polygons = calculate_hull(pred_gaussians, alpha)
     vel, _ = compute_velocity(np.array(robot_pos[:2]), polygons, xref)
 
     plotter.plot_trajectory_and_robot(OBS_LENGTH, obs_pos, polygons, robot_pos)
