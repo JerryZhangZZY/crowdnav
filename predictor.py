@@ -1,10 +1,11 @@
 import os
 import pickle
+
 import torch
 from torch.autograd import Variable
 import numpy as np
 from model import SocialLSTM
-from helper import getCoef, sample_gaussian_2d
+from helper import getCoef
 from grid import getSequenceGridMask, getGridMaskInference
 
 
@@ -28,7 +29,7 @@ class STGraph:
                     self.nodes[t][ped_id] = (x, y)
                 else:
                     self.nodes[t][ped_id] = (x, y)
-                # Add temporal edges (self-loop in this context)
+                """Add temporal edges (self-loop in this context)"""
                 if t > 0 and ped_id in self.nodes[t - 1]:
                     prev_x, prev_y = self.nodes[t - 1][ped_id]
                     self.edges[t][(ped_id, ped_id)] = ((prev_x, prev_y), (x, y))
@@ -57,11 +58,11 @@ class Predictor:
 
         checkpoint_path = os.path.join(self.model_path, f'social_lstm_model_{self.epoch}.tar')
         if os.path.isfile(checkpoint_path):
-            print('Loading checkpoint')
+            print(f"\033[34mLoading checkpoint\033[0m")
             checkpoint = torch.load(checkpoint_path)
             model_epoch = checkpoint['epoch']
             net.load_state_dict(checkpoint['state_dict'])
-            print(f'Loaded checkpoint at epoch {model_epoch}')
+            print(f"\033[34mCheckpoint loaded at epoch {model_epoch}\033[0m")
 
         return net, saved_args
 
@@ -81,48 +82,53 @@ class Predictor:
         obs_nodes, obs_nodesPresent, obs_grid = nodes[:obs_length], nodesPresent[:obs_length], grid_seq[:obs_length]
 
         """Perform trajectory prediction"""
-        predicted_trajectories = self.sample(obs_nodes, obs_nodesPresent, obs_grid, obs_length, pred_length, dimensions)
+        history_coords, pred_gaussians = self.sample(obs_nodes, obs_nodesPresent, obs_grid, obs_length, pred_length, dimensions)
 
-        return predicted_trajectories
+        return history_coords, pred_gaussians
 
     def sample(self, nodes, nodes_present, grid, obs_length, pred_length, dimensions):
         num_nodes = nodes.shape[1]
-        hidden_states = Variable(torch.zeros(num_nodes, self.net.args.rnn_size), requires_grad=False).to(
-            torch.device("cpu"))
-        cell_states = Variable(torch.zeros(num_nodes, self.net.args.rnn_size), requires_grad=False).to(
-            torch.device("cpu"))
+        hidden_states = Variable(torch.zeros(num_nodes, self.net.args.rnn_size), requires_grad=False).to(torch.device("cpu"))
+        cell_states = Variable(torch.zeros(num_nodes, self.net.args.rnn_size), requires_grad=False).to(torch.device("cpu"))
 
         for tstep in range(obs_length - 1):
-            out_obs, hidden_states, cell_states = self.net(nodes[tstep].view(1, num_nodes, 2), [grid[tstep]],
-                                                           [nodes_present[tstep]], hidden_states, cell_states)
+            out_obs, hidden_states, cell_states = self.net(
+                nodes[tstep].view(1, num_nodes, 2), [grid[tstep]], [nodes_present[tstep]], hidden_states, cell_states
+            )
 
-        ret_nodes = Variable(torch.zeros(obs_length + pred_length, num_nodes, 2), requires_grad=False).to(
-            torch.device("cpu"))
+        """Initialize lists to store results"""
+        obs_pos = []
+        pred_gaussians = []
+
+        """Store actual history coordinates"""
+        for tstep in range(obs_length):
+            obs_pos.append(nodes[tstep].cpu().numpy().tolist())
+
+        ret_nodes = Variable(torch.zeros(obs_length + pred_length, num_nodes, 2), requires_grad=False).to(torch.device("cpu"))
         ret_nodes[:obs_length, :, :] = nodes.clone()
         prev_grid = grid[-1].clone()
 
         for tstep in range(obs_length - 1, pred_length + obs_length - 1):
-            outputs, hidden_states, cell_states = self.net(ret_nodes[tstep].view(1, num_nodes, 2),
-                                                           [prev_grid], [nodes_present[obs_length - 1]], hidden_states,
-                                                           cell_states)
+            outputs, hidden_states, cell_states = self.net(
+                ret_nodes[tstep].view(1, num_nodes, 2), [prev_grid], [nodes_present[obs_length - 1]], hidden_states, cell_states
+            )
             mux, muy, sx, sy, corr = getCoef(outputs)
-            '''
-            Use random sampling
-            '''
-            # next_x, next_y = sample_gaussian_2d(mux.data, muy.data, sx.data, sy.data, corr.data,
-            #                                     nodes_present[obs_length - 1])
-            # ret_nodes[tstep + 1, :, 0] = next_x
-            # ret_nodes[tstep + 1, :, 1] = next_y
-            '''
-            Use mean points directly
-            '''
+
+            """Initialize list for this time step's Gaussian parameters"""
+            gaussians_timestep = []
+
+            for node_idx in range(num_nodes):
+                gaussians_timestep.append([mux[0, node_idx].item(), muy[0, node_idx].item(), sx[0, node_idx].item(), sy[0, node_idx].item(), corr[0, node_idx].item()])
+
+            """Append the list of this time step's Gaussian parameters to pred_gaussians"""
+            pred_gaussians.append(gaussians_timestep)
+
             ret_nodes[tstep + 1, :, 0] = mux.data
             ret_nodes[tstep + 1, :, 1] = muy.data
-            list_of_nodes = Variable(torch.LongTensor(nodes_present[obs_length - 1]), requires_grad=False).to(
-                torch.device("cpu"))
+
+            list_of_nodes = Variable(torch.LongTensor(nodes_present[obs_length - 1]), requires_grad=False).to(torch.device("cpu"))
             current_nodes = torch.index_select(ret_nodes[tstep + 1], 0, list_of_nodes)
-            prev_grid = getGridMaskInference(current_nodes.data.cpu().numpy(), dimensions,
-                                             self.saved_args.neighborhood_size, self.saved_args.grid_size)
+            prev_grid = getGridMaskInference(current_nodes.data.cpu().numpy(), dimensions, self.saved_args.neighborhood_size, self.saved_args.grid_size)
             prev_grid = Variable(torch.from_numpy(prev_grid).float(), requires_grad=False).to(torch.device("cpu"))
 
-        return ret_nodes
+        return obs_pos, pred_gaussians
