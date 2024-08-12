@@ -4,14 +4,13 @@ import math
 import socket
 import numpy as np
 
-from shapely.geometry import Point, Polygon, LineString
 from scipy.optimize import minimize, Bounds
 from scipy.stats import chi2
 from plotter import TrajectoryPlotter
 from predictor import Predictor
 
-"""Convex hull settings"""
-P = 0.5
+"""Gaussian distribution settings"""
+P = 0.9
 
 """Network settings"""
 ROBOT_IP = '192.168.0.193'
@@ -47,7 +46,7 @@ HORIZON_LENGTH = PRED_LENGTH
 NMPC_TIMESTEP = 0.3
 ROBOT_RADIUS = 0.1
 V_MAX = 0.8
-V_MIN = 0.2
+V_MIN = 0
 Qc = 0.6
 kappa = 5
 
@@ -85,16 +84,44 @@ def compute_xref(start, goal, number_of_steps, timestep):
     return np.linspace(start, goal, number_of_steps).reshape((2 * number_of_steps))
 
 
-def compute_velocity(robot_state, polygons, xref):
+def precompute_ellipses(pred_gaussians, alpha):
+    precomputed_ellipses = []
+    if pred_gaussians:
+        for ped_index in range(len(pred_gaussians[0])):
+            ellipses_for_ped = []
+            for i in range(len(pred_gaussians)):
+                gaussian_params = pred_gaussians[i][ped_index]
+                mux, muy, sx, sy, corr = gaussian_params
+
+                cov_matrix = np.array([
+                    [sx**2, corr * sx * sy],
+                    [corr * sx * sy, sy**2]
+                ])
+
+                eigvals, eigvecs = np.linalg.eigh(cov_matrix)
+                major_axis = alpha * np.sqrt(eigvals[1])
+                minor_axis = alpha * np.sqrt(eigvals[0])
+                rotation_angle = np.arctan2(eigvecs[1, 1], eigvecs[0, 1])
+
+                ellipse_params = (mux, muy, major_axis, minor_axis, rotation_angle)
+                ellipses_for_ped.append(ellipse_params)
+
+            precomputed_ellipses.append(ellipses_for_ped)
+
+    return precomputed_ellipses
+
+
+def compute_velocity(robot_state, ellipses, xref):
     """
     Calculation of control speed in x, y direction
+    Using convex hulls as prediction
 
     Final output of NMPC
     """
     u0 = np.random.rand(2 * HORIZON_LENGTH)
 
     def cost_fn(u):
-        return total_cost(u, robot_state, polygons, xref)
+        return total_cost(u, robot_state, ellipses, xref)
 
     bounds = Bounds(lower_bound, upper_bound)
     res = minimize(cost_fn, u0, method='SLSQP', bounds=bounds)
@@ -102,14 +129,45 @@ def compute_velocity(robot_state, polygons, xref):
     return velocity, res.x
 
 
-def total_cost(u, robot_state, polygons, xref):
+def compute_velocity_using_mean_points(robot_state, mean_points, xref):
+    """
+    Calculation of control speed in x, y direction
+    Using mean points as prediction
+
+    Final output of NMPC
+    """
+    u0 = np.random.rand(2 * HORIZON_LENGTH)
+
+    def cost_fn(u):
+        return total_cost_using_mean_points(u, robot_state, mean_points, xref)
+
+    bounds = Bounds(lower_bound, upper_bound)
+    res = minimize(cost_fn, u0, method='SLSQP', bounds=bounds)
+    velocity = res.x[:2]
+    return velocity, res.x
+
+
+def total_cost(u, robot_state, ellipses, xref):
     """
     Calculate total cost
     """
     x_robot = update_state(robot_state, u, NMPC_TIMESTEP)
     c1 = tracking_cost(x_robot, xref)
-    if polygons:
-        c2 = total_collision_cost(x_robot, polygons)
+    if ellipses:
+        c2 = total_collision_cost(x_robot, ellipses)
+        return c1 + c2
+    else:
+        return c1
+
+
+def total_cost_using_mean_points(u, robot_state, mean_points, xref):
+    """
+    Calculate total cost
+    """
+    x_robot = update_state(robot_state, u, NMPC_TIMESTEP)
+    c1 = tracking_cost(x_robot, xref)
+    if mean_points:
+        c2 = total_collision_cost_with_mean_points(x_robot, mean_points)
         return c1 + c2
     else:
         return c1
@@ -122,102 +180,75 @@ def tracking_cost(x, xref):
     return np.linalg.norm(x - xref)
 
 
-def quickhull(points):
-    def find_side(p1, p2, p):
-        val = (p[1] - p1[1]) * (p2[0] - p1[0]) - (p2[1] - p1[1]) * (p[0] - p1[0])
-        if val > 0:
-            return 1
-        if val < 0:
-            return -1
-        return 0
-
-    def line_dist(p1, p2, p):
-        return abs((p[1] - p1[1]) * (p2[0] - p1[0]) - (p2[1] - p1[1]) * (p[0] - p1[0]))
-
-    def hull_set(p1, p2, points, side):
-        ind = -1
-        max_dist = 0
-        for i in range(len(points)):
-            temp = line_dist(p1, p2, points[i])
-            if (find_side(p1, p2, points[i]) == side) and (temp > max_dist):
-                ind = i
-                max_dist = temp
-        if ind == -1:
-            hull.append(p1)
-            hull.append(p2)
-            return
-        hull_set(points[ind], p1, points, -find_side(points[ind], p1, p2))
-        hull_set(points[ind], p2, points, -find_side(points[ind], p2, p1))
-
-    hull = []
-    if len(points) < 3:
-        return points.tolist()
-    min_x = np.argmin(points[:, 0])
-    max_x = np.argmax(points[:, 0])
-    hull_set(points[min_x], points[max_x], points, 1)
-    hull_set(points[min_x], points[max_x], points, -1)
-    unique_hull = np.unique(hull, axis=0)
-    """Sorting points to form a correct polygon"""
-    center = np.mean(unique_hull, axis=0)
-    sorted_hull = sorted(unique_hull, key=lambda p: np.arctan2(p[1] - center[1], p[0] - center[0]))
-    return np.array(sorted_hull)
-
-
-def sample_ellipse_points(mu_x, mu_y, sigma_x, sigma_y, corr, alpha):
+def get_mean_points(pred_gaussians):
     """
-    Crop the 2D Gaussian distribution according to the probability and compute the coordinates of the four vertices
-    of the ellipsoid shape
+    Extract mean points (mux, muy) for each pedestrian and return a list of lists of points
     """
-    cov_matrix = np.array([[sigma_x ** 2, corr * sigma_x * sigma_y],
-                           [corr * sigma_x * sigma_y, sigma_y ** 2]])
-
-    eigenvalues, eigenvectors = np.linalg.eigh(cov_matrix)
-    axis_lengths = alpha * np.sqrt(eigenvalues)
-    ellipse_points = np.array([
-        mu_x + axis_lengths[0] * eigenvectors[0, 0], mu_y + axis_lengths[0] * eigenvectors[0, 1],
-        mu_x - axis_lengths[0] * eigenvectors[0, 0], mu_y - axis_lengths[0] * eigenvectors[0, 1],
-        mu_x + axis_lengths[1] * eigenvectors[1, 0], mu_y + axis_lengths[1] * eigenvectors[1, 1],
-        mu_x - axis_lengths[1] * eigenvectors[1, 0], mu_y - axis_lengths[1] * eigenvectors[1, 1]
-    ]).reshape(4, 2)
-    return ellipse_points
-
-
-def calculate_hull(pred_gaussians, alpha):
-    """
-    Calculate convex hull for each pedestrian and return a list of polygons
-    """
-    polygons = []
+    mean_points = []
     if pred_gaussians:
         num_pedestrians = len(pred_gaussians[0])
         for ped_index in range(num_pedestrians):
-            all_points = []
+            pedestrian_points = []
             for i in range(len(pred_gaussians)):
                 gaussian_params = pred_gaussians[i][ped_index]
-                mux, muy, sx, sy, corr = gaussian_params
-                ellipse_points = sample_ellipse_points(mux, muy, sx, sy, corr, alpha)
-                all_points.extend(ellipse_points)
-            all_points = np.array(all_points)
-            hull_points = quickhull(all_points)
-            polygons.append(Polygon(hull_points))
-    return polygons
+                mux, muy = gaussian_params[:2]  # Extract mux and muy
+                pedestrian_points.append((mux, muy))
+            mean_points.append(pedestrian_points)
+    return mean_points
 
 
-def total_collision_cost(robot, polygons):
+def total_collision_cost(robot, ellipses):
     total_cost = 0.0
-    num_pedestrians = len(pred_gaussians[0])
+    num_pedestrians = len(ellipses)
     for ped_index in range(num_pedestrians):
-        polygon = polygons[ped_index]
-        for i in range(len(pred_gaussians)):
+        for i in range(len(ellipses[ped_index])):
             rob = robot[2 * i: 2 * i + 2]
-            robot_point = Point(rob)
-            total_cost += collision_cost_with_polygon(robot_point, polygon)
+            robot_point = np.array(rob)
+            ellipse_params = ellipses[ped_index][i]
+            total_cost += collision_cost(robot_point, ellipse_params)
     return total_cost
 
 
-def collision_cost_with_polygon(robot_point, hull_polygon):
-    hull_line = LineString(hull_polygon.exterior.coords)
-    nearest_point_on_hull = hull_line.interpolate(hull_line.project(robot_point))
-    d = robot_point.distance(nearest_point_on_hull) - ROBOT_RADIUS
+def total_collision_cost_with_mean_points(robot, mean_points):
+    total_cost = 0.0
+    num_pedestrians = len(pred_gaussians[0])
+    for ped_index in range(num_pedestrians):
+        pedestrian_points = mean_points[ped_index]
+        for i in range(len(pred_gaussians)):
+            rob = robot[2 * i: 2 * i + 2]
+            robot_point = np.array(rob)
+            pedestrian_mean_point = np.array(pedestrian_points[i])
+            total_cost += collision_cost_with_mean_points(robot_point, pedestrian_mean_point)
+    return total_cost
+
+
+def collision_cost(robot_point, ellipse_params):
+    x_robot, y_robot = robot_point
+    mux, muy, major_axis, minor_axis, rotation_angle = ellipse_params
+
+    cos_angle = np.cos(-rotation_angle)
+    sin_angle = np.sin(-rotation_angle)
+
+    x_transformed = cos_angle * (x_robot - mux) - sin_angle * (y_robot - muy)
+    y_transformed = sin_angle * (x_robot - mux) + cos_angle * (y_robot - muy)
+
+    ellipse_value = (x_transformed / major_axis)**2 + (y_transformed / minor_axis)**2
+
+    if ellipse_value <= 1.0:
+        d = 0
+    else:
+        x_closest = major_axis * (x_transformed / np.sqrt(x_transformed**2 + (y_transformed * major_axis / minor_axis)**2))
+        y_closest = minor_axis * (y_transformed / np.sqrt((x_transformed * minor_axis / major_axis)**2 + y_transformed**2))
+
+        dx = x_transformed - x_closest
+        dy = y_transformed - y_closest
+        d = np.sqrt(dx**2 + dy**2)
+
+    return Qc / (1 + np.exp(kappa * (d - 2 * ROBOT_RADIUS)))
+
+
+def collision_cost_with_mean_points(robot_point, mean_point):
+    d = np.linalg.norm(robot_point - mean_point)
     return Qc / (1 + np.exp(kappa * (d - 2 * ROBOT_RADIUS)))
 
 
@@ -427,7 +458,8 @@ while True:
 
     robot_pos = None
     current_target = None
-    polygons = None
+    ellipses = None
+    mean_points = None
 
     """If robot detected"""
     if robot_pos_and_ori is not None:
@@ -445,9 +477,14 @@ while True:
 
         """Compute reference points"""
         xref = compute_xref(robot_pos, np.array(FINAL_TARGET), HORIZON_LENGTH, NMPC_TIMESTEP)
-        """Apply NMPC to get control values"""
-        polygons = calculate_hull(pred_gaussians, alpha)
-        vel, _ = compute_velocity(robot_pos, polygons, xref)
+
+        """Using gaussian distributions"""
+        # ellipses = precompute_ellipses(pred_gaussians, alpha)
+        # vel, _ = compute_velocity(np.array(robot_pos[:2]), ellipses, xref)
+
+        """Using mean points"""
+        mean_points = get_mean_points(pred_gaussians)
+        vel, _ = compute_velocity_using_mean_points(np.array(robot_pos[:2]), mean_points, xref)
 
         """Print power percentage"""
         power = ((vel[0] ** 2) + (vel[1] ** 2)) / (V_MAX ** 2)
@@ -462,7 +499,8 @@ while True:
         current_target = (robot_pos[0] + (vel[0] * NMPC_TIMESTEP), robot_pos[1] + (vel[1] * NMPC_TIMESTEP))
 
     """Drawing real-time predictive trajectories"""
-    plotter.plot_trajectory_and_robot(OBS_LENGTH, obs_pos, polygons, robot_pos, current_target)
+    plotter.plot_trajectory_and_robot(OBS_LENGTH, obs_pos, ellipses, mean_points, robot_pos, current_target)
+
     cv2.imshow('Camera', frame)
     cv2.waitKey(1) & 0xFF
     time_delay = NMPC_TIMESTEP - (time.time() - previous_time)
