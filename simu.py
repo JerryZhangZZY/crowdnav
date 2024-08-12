@@ -1,18 +1,16 @@
-import time
-
 import numpy as np
 import pybullet as p
 import pybullet_data
 import csv
 
-from shapely.geometry import Point, Polygon, LineString
 from scipy.optimize import minimize, Bounds
 from scipy.stats import chi2
 from plotter import TrajectoryPlotter
 from predictor import Predictor
 
-"""Convex hull settings"""
+"""Gaussian distribution settings"""
 P = 0.99
+USE_GAUSSIAN = True
 
 """Environment settings"""
 START_POS = [0, 0]
@@ -117,8 +115,8 @@ def precompute_ellipses(pred_gaussians, alpha):
                 mux, muy, sx, sy, corr = gaussian_params
 
                 cov_matrix = np.array([
-                    [sx**2, corr * sx * sy],
-                    [corr * sx * sy, sy**2]
+                    [sx ** 2, corr * sx * sy],
+                    [corr * sx * sy, sy ** 2]
                 ])
 
                 eigvals, eigvecs = np.linalg.eigh(cov_matrix)
@@ -255,17 +253,19 @@ def collision_cost(robot_point, ellipse_params):
     x_transformed = cos_angle * (x_robot - mux) - sin_angle * (y_robot - muy)
     y_transformed = sin_angle * (x_robot - mux) + cos_angle * (y_robot - muy)
 
-    ellipse_value = (x_transformed / major_axis)**2 + (y_transformed / minor_axis)**2
+    ellipse_value = (x_transformed / major_axis) ** 2 + (y_transformed / minor_axis) ** 2
 
     if ellipse_value <= 1.0:
         d = 0
     else:
-        x_closest = major_axis * (x_transformed / np.sqrt(x_transformed**2 + (y_transformed * major_axis / minor_axis)**2))
-        y_closest = minor_axis * (y_transformed / np.sqrt((x_transformed * minor_axis / major_axis)**2 + y_transformed**2))
+        x_closest = major_axis * (
+                    x_transformed / np.sqrt(x_transformed ** 2 + (y_transformed * major_axis / minor_axis) ** 2))
+        y_closest = minor_axis * (
+                    y_transformed / np.sqrt((x_transformed * minor_axis / major_axis) ** 2 + y_transformed ** 2))
 
         dx = x_transformed - x_closest
         dy = y_transformed - y_closest
-        d = np.sqrt(dx**2 + dy**2)
+        d = np.sqrt(dx ** 2 + dy ** 2)
 
     return Qc / (1 + np.exp(kappa * (d - 2 * ROBOT_RADIUS)))
 
@@ -412,15 +412,18 @@ for time_step in time_steps:
 
     xref = compute_xref(np.array(robot_pos[:2]), TARGET_POS, HORIZON_LENGTH, NMPC_TIMESTEP)
 
-    """Using gaussian distributions"""
-    # ellipses = precompute_ellipses(pred_gaussians, alpha)
-    # vel, _ = compute_velocity(np.array(robot_pos[:2]), ellipses, xref)
-    # plotter.plot_trajectory_and_robot(OBS_LENGTH, obs_pos, ellipses, robot_pos)
+    if USE_GAUSSIAN:
+        """Using gaussian distributions"""
+        ellipses = precompute_ellipses(pred_gaussians, alpha)
+        mean_points = None
+        vel, _ = compute_velocity(np.array(robot_pos[:2]), ellipses, xref)
+    else:
+        """Using mean points"""
+        ellipses = None
+        mean_points = get_mean_points(pred_gaussians)
+        vel, _ = compute_velocity_using_mean_points(np.array(robot_pos[:2]), mean_points, xref)
 
-    """Using mean points"""
-    mean_points = get_mean_points(pred_gaussians)
-    vel, _ = compute_velocity_using_mean_points(np.array(robot_pos[:2]), mean_points, xref)
-    plotter.plot_trajectory_and_robot_using_mean_points(OBS_LENGTH, obs_pos, mean_points, robot_pos)
+    plotter.plot_trajectory_and_robot(OBS_LENGTH, obs_pos, ellipses, mean_points, robot_pos)
 
     """Robot Simple Transient"""
     p.resetBasePositionAndOrientation(robotId,
