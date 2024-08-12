@@ -1,3 +1,5 @@
+import time
+
 import numpy as np
 import pybullet as p
 import pybullet_data
@@ -16,6 +18,7 @@ P = 0.99
 START_POS = [0, 0]
 TARGET_POS = [0, 0]
 RADIUS = 0.3
+POS_BIAS = 0.1
 ROBOT_COLOR = [1, 0.1, 0.1, 1]
 PEDESTRIAN_COLOR = [0, 0.7, 0, 1]
 TRAJ_DATA_PATH = "pixel_pos.csv"
@@ -34,8 +37,8 @@ HORIZON_LENGTH = PRED_LENGTH
 NMPC_TIMESTEP = 0.4
 ROBOT_RADIUS = 0.3
 V_MAX = 1.5
-# V_MIN = 0
-Qc = 0.6
+V_MIN = 0
+Qc = 6
 kappa = 10
 
 upper_bound = [(1 / np.sqrt(2)) * V_MAX] * HORIZON_LENGTH * 2
@@ -93,17 +96,21 @@ def compute_xref(start, goal, number_of_steps, timestep):
     """
     dir_vec = goal - start
     norm = np.linalg.norm(dir_vec)
-    if norm < 0.1:
-        new_goal = start
+    if norm < POS_BIAS:
+        goal = start
+    elif norm > (POS_BIAS * 5):
+        dir_vec = dir_vec / norm
+        goal = start + dir_vec * V_MAX * timestep * number_of_steps
     else:
         dir_vec = dir_vec / norm
-        new_goal = start + dir_vec * V_MAX * timestep * number_of_steps
-    return np.linspace(start, new_goal, number_of_steps).reshape((2 * number_of_steps))
+        start = start + dir_vec * V_MIN * timestep
+    return np.linspace(start, goal, number_of_steps).reshape((2 * number_of_steps))
 
 
 def compute_velocity(robot_state, polygons, xref):
     """
     Calculation of control speed in x, y direction
+    Using convex hulls as prediction
 
     Final output of NMPC
     """
@@ -111,6 +118,24 @@ def compute_velocity(robot_state, polygons, xref):
 
     def cost_fn(u):
         return total_cost(u, robot_state, polygons, xref)
+
+    bounds = Bounds(lower_bound, upper_bound)
+    res = minimize(cost_fn, u0, method='SLSQP', bounds=bounds, tol=1e-2)
+    velocity = res.x[:2]
+    return velocity, res.x
+
+
+def compute_velocity_using_mean_points(robot_state, mean_points, xref):
+    """
+    Calculation of control speed in x, y direction
+    Using mean points as prediction
+
+    Final output of NMPC
+    """
+    u0 = np.random.rand(2 * HORIZON_LENGTH)
+
+    def cost_fn(u):
+        return total_cost_using_mean_points(u, robot_state, mean_points, xref)
 
     bounds = Bounds(lower_bound, upper_bound)
     res = minimize(cost_fn, u0, method='SLSQP', bounds=bounds, tol=1e-2)
@@ -126,6 +151,19 @@ def total_cost(u, robot_state, polygons, xref):
     c1 = tracking_cost(x_robot, xref)
     if polygons:
         c2 = total_collision_cost(x_robot, polygons)
+        return c1 + c2
+    else:
+        return c1
+
+
+def total_cost_using_mean_points(u, robot_state, mean_points, xref):
+    """
+    Calculate total cost
+    """
+    x_robot = update_state(robot_state, u, NMPC_TIMESTEP)
+    c1 = tracking_cost(x_robot, xref)
+    if mean_points:
+        c2 = total_collision_cost_with_mean_points(x_robot, mean_points)
         return c1 + c2
     else:
         return c1
@@ -218,6 +256,23 @@ def calculate_hull(pred_gaussians, alpha):
     return polygons
 
 
+def get_mean_points(pred_gaussians):
+    """
+    Extract mean points (mux, muy) for each pedestrian and return a list of lists of points
+    """
+    mean_points = []
+    if pred_gaussians:
+        num_pedestrians = len(pred_gaussians[0])
+        for ped_index in range(num_pedestrians):
+            pedestrian_points = []
+            for i in range(len(pred_gaussians)):
+                gaussian_params = pred_gaussians[i][ped_index]
+                mux, muy = gaussian_params[:2]  # Extract mux and muy
+                pedestrian_points.append((mux, muy))
+            mean_points.append(pedestrian_points)
+    return mean_points
+
+
 def total_collision_cost(robot, polygons):
     total_cost = 0.0
     num_pedestrians = len(pred_gaussians[0])
@@ -230,10 +285,28 @@ def total_collision_cost(robot, polygons):
     return total_cost
 
 
+def total_collision_cost_with_mean_points(robot, mean_points):
+    total_cost = 0.0
+    num_pedestrians = len(pred_gaussians[0])
+    for ped_index in range(num_pedestrians):
+        pedestrian_points = mean_points[ped_index]
+        for i in range(len(pred_gaussians)):
+            rob = robot[2 * i: 2 * i + 2]
+            robot_point =np.array(rob)
+            pedestrian_mean_point = np.array(pedestrian_points[i])
+            total_cost += collision_cost_with_mean_points(robot_point, pedestrian_mean_point)
+    return total_cost
+
+
 def collision_cost_with_polygon(robot_point, hull_polygon):
     hull_line = LineString(hull_polygon.exterior.coords)
     nearest_point_on_hull = hull_line.interpolate(hull_line.project(robot_point))
     d = robot_point.distance(nearest_point_on_hull) - ROBOT_RADIUS
+    return Qc / (1 + np.exp(kappa * (d - 2 * ROBOT_RADIUS)))
+
+
+def collision_cost_with_mean_points(robot_point, mean_point):
+    d = np.linalg.norm(robot_point - mean_point)
     return Qc / (1 + np.exp(kappa * (d - 2 * ROBOT_RADIUS)))
 
 
@@ -373,10 +446,16 @@ for time_step in time_steps:
         obs_pos, pred_gaussians = scale_coords_and_gaussians(obs_pos, pred_gaussians, X_SCALE, Y_SCALE)
 
     xref = compute_xref(np.array(robot_pos[:2]), TARGET_POS, HORIZON_LENGTH, NMPC_TIMESTEP)
-    polygons = calculate_hull(pred_gaussians, alpha)
-    vel, _ = compute_velocity(np.array(robot_pos[:2]), polygons, xref)
 
-    plotter.plot_trajectory_and_robot(OBS_LENGTH, obs_pos, polygons, robot_pos)
+    """Using convex hull"""
+    # polygons = calculate_hull(pred_gaussians, alpha)
+    # vel, _ = compute_velocity(np.array(robot_pos[:2]), polygons, xref)
+    # plotter.plot_trajectory_and_robot(OBS_LENGTH, obs_pos, polygons, robot_pos)
+
+    """Using mean points"""
+    mean_points = get_mean_points(pred_gaussians)
+    vel, _ = compute_velocity_using_mean_points(np.array(robot_pos[:2]), mean_points, xref)
+    plotter.plot_trajectory_and_robot_using_mean_points(OBS_LENGTH, obs_pos, mean_points, robot_pos)
 
     """Robot Simple Transient"""
     p.resetBasePositionAndOrientation(robotId,
