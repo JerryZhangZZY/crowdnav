@@ -10,7 +10,7 @@ from plotter import TrajectoryPlotter
 from predictor import Predictor
 
 """Convex hull settings"""
-P = 0.01
+P = 0.99
 
 """Environment settings"""
 START_POS = [0, 0]
@@ -34,7 +34,7 @@ HORIZON_LENGTH = PRED_LENGTH
 NMPC_TIMESTEP = 0.4
 ROBOT_RADIUS = 0.3
 V_MAX = 1.5
-V_MIN = 0
+# V_MIN = 0
 Qc = 0.6
 kappa = 10
 
@@ -52,10 +52,10 @@ def create_sphere(radius, color, position):
     pedestrian_visual = p.createVisualShape(p.GEOM_SPHERE, radius=radius, rgbaColor=color)
     pedestrian_collision = p.createCollisionShape(p.GEOM_SPHERE, radius=RADIUS)
     return p.createMultiBody(baseMass=1,
-                                      baseInertialFramePosition=[0, 0, 0],
-                                      baseCollisionShapeIndex=pedestrian_collision,
-                                      baseVisualShapeIndex=pedestrian_visual,
-                                      basePosition=position)
+                             baseInertialFramePosition=[0, 0, 0],
+                             baseCollisionShapeIndex=pedestrian_collision,
+                             baseVisualShapeIndex=pedestrian_visual,
+                             basePosition=position)
 
 
 class PedestrianPool:
@@ -313,6 +313,7 @@ history_positions = {pid: [] for pid in np.unique(pids)}
 
 collision_count = 0
 
+"""Convert probability to alpha"""
 alpha = probability_to_alpha(P)
 
 """Start simulation"""
@@ -379,7 +380,8 @@ for time_step in time_steps:
 
     """Robot Simple Transient"""
     p.resetBasePositionAndOrientation(robotId,
-                                      [vel[0] * NMPC_TIMESTEP + robot_pos[0], vel[1] * NMPC_TIMESTEP + robot_pos[1], RADIUS],
+                                      [vel[0] * NMPC_TIMESTEP + robot_pos[0], vel[1] * NMPC_TIMESTEP + robot_pos[1],
+                                       RADIUS],
                                       [0, 0, 0, 1])
     # time_delay = NMPC_TIMESTEP - (time.time() - previous_time)
     # if time_delay > 0:
