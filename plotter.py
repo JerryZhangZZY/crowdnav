@@ -1,4 +1,5 @@
 import matplotlib.pyplot as plt
+import matplotlib.patches as patches
 import matplotlib as mpl
 import numpy as np
 
@@ -9,7 +10,7 @@ class TrajectoryPlotter:
     def __init__(self):
         self.fig, self.ax = plt.subplots(figsize=(9, 8))
 
-    def plot_trajectory_and_robot(self, obs_length, obs_pos, polygons, robot_pos):
+    def plot_trajectory_and_robot(self, obs_length, obs_pos, ellipses, robot_pos):
         self.ax.clear()
         self.ax.set_xlabel('X')
         self.ax.set_ylabel('Y')
@@ -38,18 +39,27 @@ class TrajectoryPlotter:
         if robot_pos:
             self.ax.plot(robot_pos[0], robot_pos[1], 'ro', label='Robot', markersize=10)
 
-        """Draw predicted convex hulls"""
-        if polygons:
-            for polygon in polygons:
-                x, y = polygon.exterior.xy
-                self.ax.plot(x, y, color='green')
+        """Draw predicted ellipses"""
+        if ellipses:
+            for ellipse_params_list in ellipses:
+                for ellipse_params in ellipse_params_list:
+                    mux, muy, major_axis, minor_axis, rotation_angle = ellipse_params
+
+                    # Convert the rotation angle from radians to degrees
+                    angle_deg = np.degrees(rotation_angle)
+
+                    # Create an Ellipse patch
+                    ellipse = patches.Ellipse((mux, muy), width=2 * major_axis, height=2 * minor_axis,
+                                              angle=angle_deg, edgecolor='green', alpha=0.5, facecolor='none')
+
+                    # Add the ellipse to the plot
+                    self.ax.add_patch(ellipse)
 
         handles, _ = self.ax.get_legend_handles_labels()
         if handles:
             self.ax.legend()
         plt.draw()
         plt.pause(0.001)
-
 
     def plot_trajectory_and_robot_using_mean_points(self, obs_length, obs_pos, mean_points, robot_pos):
         """
