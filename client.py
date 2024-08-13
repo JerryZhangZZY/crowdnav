@@ -10,7 +10,9 @@ from plotter import TrajectoryPlotter
 from predictor import Predictor
 
 """Gaussian distribution settings"""
-P = 0.9
+P = 0.1
+VIP_P = {4: 0.999}
+USE_GAUSSIAN = True
 
 """Network settings"""
 ROBOT_IP = '192.168.0.193'
@@ -44,10 +46,10 @@ SCALE = 3
 HORIZON_LENGTH = PRED_LENGTH
 # HORIZON_LENGTH = 3
 NMPC_TIMESTEP = 0.3
-ROBOT_RADIUS = 0.1
+ROBOT_RADIUS = 0.2
 V_MAX = 0.8
 V_MIN = 0
-Qc = 0.6
+Qc = 1
 kappa = 5
 
 """Headless mode settings"""
@@ -84,11 +86,20 @@ def compute_xref(start, goal, number_of_steps, timestep):
     return np.linspace(start, goal, number_of_steps).reshape((2 * number_of_steps))
 
 
-def precompute_ellipses(pred_gaussians, alpha):
+def precompute_ellipses(pred_gaussians, alpha, x_seq, vip_alpha):
     precomputed_ellipses = []
     if pred_gaussians:
+        pids = [position[0] for position in x_seq[0]]
+
         for ped_index in range(len(pred_gaussians[0])):
             ellipses_for_ped = []
+            pid = pids[ped_index]
+
+            if pid in vip_alpha:
+                current_alpha = vip_alpha[pid]
+            else:
+                current_alpha = alpha
+
             for i in range(len(pred_gaussians)):
                 gaussian_params = pred_gaussians[i][ped_index]
                 mux, muy, sx, sy, corr = gaussian_params
@@ -99,8 +110,8 @@ def precompute_ellipses(pred_gaussians, alpha):
                 ])
 
                 eigvals, eigvecs = np.linalg.eigh(cov_matrix)
-                major_axis = alpha * np.sqrt(eigvals[1])
-                minor_axis = alpha * np.sqrt(eigvals[0])
+                major_axis = current_alpha * np.sqrt(eigvals[1])
+                minor_axis = current_alpha * np.sqrt(eigvals[0])
                 rotation_angle = np.arctan2(eigvecs[1, 1], eigvecs[0, 1])
 
                 ellipse_params = (mux, muy, major_axis, minor_axis, rotation_angle)
@@ -412,6 +423,9 @@ print("\033[1;32mCamera set up successfully\033[0m")
 
 """Convert probability to alpha"""
 alpha = probability_to_alpha(P)
+vip_alpha = {}
+for pid in VIP_P:
+    vip_alpha[pid] = probability_to_alpha(VIP_P[pid])
 
 while True:
     previous_time = time.time()
@@ -456,10 +470,16 @@ while True:
         obs_pos, pred_gaussians = predictor.predict_trajectory(x_seq, OBS_LENGTH, PRED_LENGTH, [640, 480])
         obs_pos, pred_gaussians = scale_coords_and_gaussians(obs_pos, pred_gaussians, SCALE)
 
-    robot_pos = None
-    current_target = None
-    ellipses = None
-    mean_points = None
+    robot_pos, current_target = None, None
+
+    if USE_GAUSSIAN:
+        """Using gaussian distributions"""
+        ellipses = precompute_ellipses(pred_gaussians, alpha, x_seq, vip_alpha)
+        mean_points = None
+    else:
+        """Using mean points"""
+        ellipses = None
+        mean_points = get_mean_points(pred_gaussians)
 
     """If robot detected"""
     if robot_pos_and_ori is not None:
@@ -478,13 +498,12 @@ while True:
         """Compute reference points"""
         xref = compute_xref(robot_pos, np.array(FINAL_TARGET), HORIZON_LENGTH, NMPC_TIMESTEP)
 
-        """Using gaussian distributions"""
-        # ellipses = precompute_ellipses(pred_gaussians, alpha)
-        # vel, _ = compute_velocity(np.array(robot_pos[:2]), ellipses, xref)
-
-        """Using mean points"""
-        mean_points = get_mean_points(pred_gaussians)
-        vel, _ = compute_velocity_using_mean_points(np.array(robot_pos[:2]), mean_points, xref)
+        if USE_GAUSSIAN:
+            """Using gaussian distributions"""
+            vel, _ = compute_velocity(np.array(robot_pos[:2]), ellipses, xref)
+        else:
+            """Using mean points"""
+            vel, _ = compute_velocity_using_mean_points(np.array(robot_pos[:2]), mean_points, xref)
 
         """Print power percentage"""
         power = ((vel[0] ** 2) + (vel[1] ** 2)) / (V_MAX ** 2)
