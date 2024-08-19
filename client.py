@@ -28,7 +28,7 @@ FINAL_TARGET = (0, 0)
 SWITCH_TARGET = False
 TARGET_A = (1.8, 0.8)
 TARGET_B = (-1.8, -0.8)
-POS_BIAS = 0.1
+POS_BIAS = 0.05
 
 """ArUco settings"""
 ARUCO_TYPE = cv2.aruco.DICT_4X4_100
@@ -39,18 +39,18 @@ DISTORTION_CO_PATH = "distortion_coefficients.npy"
 OBS_LENGTH = 5
 PRED_LENGTH = 8
 MODEL_NUM = 3
-EPOCH = 139
+EPOCH = 140
 SCALE = 3
 
 """NMPC settings"""
 HORIZON_LENGTH = PRED_LENGTH
 # HORIZON_LENGTH = 3
 NMPC_TIMESTEP = 0.3
-ROBOT_RADIUS = 0.2
+ROBOT_RADIUS = 0.25
 V_MAX = 0.8
 V_MIN = 0
-Qc = 1
-kappa = 5
+Qc = 0.6
+kappa = 3
 
 """Headless mode settings"""
 HEADLESS_MODE = False
@@ -129,7 +129,7 @@ def compute_velocity(robot_state, ellipses, xref):
 
     Final output of NMPC
     """
-    u0 = np.random.rand(2 * HORIZON_LENGTH)
+    u0 = np.zeros(2 * HORIZON_LENGTH)
 
     def cost_fn(u):
         return total_cost(u, robot_state, ellipses, xref)
@@ -147,7 +147,7 @@ def compute_velocity_using_mean_points(robot_state, mean_points, xref):
 
     Final output of NMPC
     """
-    u0 = np.random.rand(2 * HORIZON_LENGTH)
+    u0 = np.zeros(2 * HORIZON_LENGTH)
 
     def cost_fn(u):
         return total_cost_using_mean_points(u, robot_state, mean_points, xref)
