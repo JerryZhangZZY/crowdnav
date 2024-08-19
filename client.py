@@ -50,7 +50,7 @@ ROBOT_RADIUS = 0.25
 V_MAX = 0.8
 V_MIN = 0
 Qc = 0.6
-kappa = 3
+kappa = 6
 
 """Headless mode settings"""
 HEADLESS_MODE = False
