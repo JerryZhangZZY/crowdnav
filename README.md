@@ -2,7 +2,7 @@
 
 CrowdNav is a project designed to enhance robot motion planning in environments with dense pedestrian traffic. By integrating Social-LSTM and Nonlinear Model Predictive Control (NMPC), this project offers a robust framework for predicting pedestrian trajectories and dynamically adjusting robot paths to navigate safely and efficiently in crowded spaces.
 
-<img src="res/simu.gif" alt="simu.gif" style="zoom: 67%;" /> <img src="res/simu.gif" alt="simu.gif" style="zoom: 67%;" />
+<img src="res/simu.gif" alt="simu.gif" style="zoom: 50%;" /> <img src="res/real.gif" alt="real.gif" style="zoom: 50%;" />
 
 ## Features
 
