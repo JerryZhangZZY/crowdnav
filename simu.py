@@ -943,10 +943,10 @@ HORIZON_LENGTH = PRED_LENGTH
 # HORIZON_LENGTH = 3
 NMPC_TIMESTEP = 0.4
 ROBOT_RADIUS = 0.3
-V_MAX = 1.5
+V_MAX = 1.8
 V_MIN = 0
-Qc = 5
-kappa = 10
+Qc = 8
+kappa = 3
 
 upper_bound = [(1 / np.sqrt(2)) * V_MAX] * HORIZON_LENGTH * 2
 lower_bound = [-(1 / np.sqrt(2)) * V_MAX] * HORIZON_LENGTH * 2
@@ -1054,7 +1054,7 @@ def compute_velocity(robot_state, ellipses, xref):
         return total_cost(u, robot_state, ellipses, xref)
 
     bounds = Bounds(lower_bound, upper_bound)
-    res = minimize(cost_fn, u0, method='SLSQP', bounds=bounds, tol=1e-4)
+    res = minimize(cost_fn, u0, method='SLSQP', bounds=bounds)
     velocity = res.x[:2]
     return velocity, res.x
 
@@ -1072,7 +1072,7 @@ def compute_velocity_using_mean_points(robot_state, mean_points, xref):
         return total_cost_using_mean_points(u, robot_state, mean_points, xref)
 
     bounds = Bounds(lower_bound, upper_bound)
-    res = minimize(cost_fn, u0, method='SLSQP', bounds=bounds, tol=1e-4)
+    res = minimize(cost_fn, u0, method='SLSQP', bounds=bounds)
     velocity = res.x[:2]
     return velocity, res.x
 
@@ -1276,7 +1276,6 @@ collision_number = [0, 0, 0]
 path_length = [0, 0, 0]
 time_spent = [0, 0, 0]
 
-# test_num = 5
 test_num = len(START_TIME_INDEXES)
 
 for scenario in range(3):
@@ -1287,7 +1286,7 @@ for scenario in range(3):
         P = 0.3
     else:
         USE_GAUSSIAN = True
-        P = 0.9
+        P = 0.99
 
     for test_index in range(test_num):
         start_time_index = START_TIME_INDEXES[test_index]
@@ -1309,9 +1308,15 @@ for scenario in range(3):
         """Start simulation"""
         for time_step in time_steps[start_time_index:]:
 
-            robot_pos, _ = p.getBasePositionAndOrientation(robotId)
+            while True:
+                try:
+                    robot_pos, _ = p.getBasePositionAndOrientation(robotId)
+                    break
+                except Exception as e:
+                    time.sleep(0.01)
+            # robot_pos, _ = p.getBasePositionAndOrientation(robotId)
 
-            if check_pos(robot_pos, TARGET_POS, POS_BIAS * 5):
+            if check_pos(robot_pos, TARGET_POS, POS_BIAS * 8):
                 break
 
             # previous_time = time.time()
@@ -1382,7 +1387,7 @@ for scenario in range(3):
                 mean_points = get_mean_points(pred_gaussians)
                 vel, _ = compute_velocity_using_mean_points(np.array(robot_pos[:2]), mean_points, xref)
 
-            plotter.plot_trajectory_and_robot(OBS_LENGTH, obs_pos, ellipses, mean_points, robot_pos)
+            # plotter.plot_trajectory_and_robot(OBS_LENGTH, obs_pos, ellipses, mean_points, robot_pos)
 
             """Robot Simple Transient"""
             p.resetBasePositionAndOrientation(robotId,
