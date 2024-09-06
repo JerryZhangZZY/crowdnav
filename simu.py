@@ -1387,7 +1387,7 @@ for scenario in range(3):
                 mean_points = get_mean_points(pred_gaussians)
                 vel, _ = compute_velocity_using_mean_points(np.array(robot_pos[:2]), mean_points, xref)
 
-            # plotter.plot_trajectory_and_robot(OBS_LENGTH, obs_pos, ellipses, mean_points, robot_pos)
+            plotter.plot_trajectory_and_robot(OBS_LENGTH, obs_pos, ellipses, mean_points, robot_pos)
 
             """Robot Simple Transient"""
             p.resetBasePositionAndOrientation(robotId,
